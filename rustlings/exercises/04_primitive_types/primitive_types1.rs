@@ -7,7 +7,7 @@ fn main() {
     }
 
     // The value of the variable should be the negation (opposite) of `is_morning`.
-    let evening = false;
+    let is_evening = false;
     if is_evening {
         println!("Good evening!");
     }
