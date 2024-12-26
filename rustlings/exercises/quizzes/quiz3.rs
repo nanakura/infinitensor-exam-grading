@@ -10,6 +10,7 @@
 //
 // Make the necessary code changes in the struct `ReportCard` and the impl
 // block to support alphabetical report cards in addition to numerical ones.
+use std::fmt::Display;
 
 struct ReportCard<T> {
     grade: T,
