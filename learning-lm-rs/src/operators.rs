@@ -114,7 +114,20 @@ pub fn swiglu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
 // C = beta * C + alpha * A @ B^T
 // hint: You don't need to do an explicit transpose of B
 pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor<f32>, alpha: f32) {
-    todo!("实现 matmul_transb，计算前做一些必要的检查会帮助你后续调试");
+    let (m, n) = (a.shape()[0], a.shape()[1]);  
+    let p = b.shape()[0];
+    let c_data = unsafe{c.data_mut()};
+    let a = a.data();
+    let b = b.data();
+    for i in 0..m {
+        for j in 0..p {
+            let mut sum = 0.0;
+            for k in 0..n {
+                sum += a[i * n + k] * b[j * n + k];
+            }
+            c_data[i * p + j] = beta * c_data[i*p+j] + alpha *sum;
+        }
+    }
 }
 
 // Dot product of two tensors (treated as vectors)
