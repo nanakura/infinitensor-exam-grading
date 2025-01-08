@@ -77,13 +77,13 @@ pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: 
     let y_data = unsafe {y.data_mut()};
     let x = x.data();
     let w = w.data();
-    for i in 0..shape[1] {
+    for i in 0..shape[0] {
         let mut sum = 0.0;
-        for j in 0..shape[0] {
-            sum += x[i*shape[i] + j] * x[i*shape[1] + j];
+        for j in 0..shape[1] {
+            sum += x[i*shape[1] + j] * x[i*shape[1] + j];
         }
-        let rms = (sum / shape[0] as f32 + epsilon).sqrt();
-        for j in 0..shape[0] {
+        let rms = (sum / shape[1] as f32 + epsilon).sqrt();
+        for j in 0..shape[1] {
             let idx = i*shape[1] + j;
             y_data[idx] = w[j] * (x[idx] / rms);
         }

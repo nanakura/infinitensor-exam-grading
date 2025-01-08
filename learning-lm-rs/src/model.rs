@@ -3,7 +3,7 @@ use std::vec;
 
 use crate::config::LlamaConfigJson;
 use crate::kvcache::KVCache;
-use crate::operators as OP;
+use crate::operators::{self as OP, matmul_transb, rms_norm};
 use crate::params::LLamaParams;
 use crate::tensor::Tensor;
 use safetensors::SafeTensors;
@@ -167,7 +167,24 @@ fn mlp(
     rms_w: &Tensor<f32>,
     eps: f32,
 ) {
-    todo!("Implement mlp");
+    use std::f32::consts::E;
+    rms_norm(hidden_states,residual, rms_w, eps);
+    matmul_transb(gate, 0., hidden_states, w_gate, 1.);
+    matmul_transb(up, 0., hidden_states, w_up, 1.);
+    let up_data = up.data().to_vec();
+    let mut act_data = gate.data().to_vec();
+    for idx in 0..act_data.len() {
+        act_data[idx] = act_data[idx] * (1.0 / (1.0 + E.powf(-act_data[idx])))
+        * up_data[idx];
+    }
+    let mut act = Tensor::new(act_data, gate.shape());
+    let mut output = Tensor::new(act.data().to_vec(), act.shape());
+    matmul_transb(&mut output, 0., &mut act, w_down, 1.);
+    let residual_data = unsafe {residual.data_mut()};
+    let output_data = output.data();
+    for idx in 0..residual_data.len() {
+        residual_data[idx] += output_data[idx];
+    }
 }
 
 #[test]
