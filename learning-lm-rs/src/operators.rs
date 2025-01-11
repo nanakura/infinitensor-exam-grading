@@ -1,4 +1,5 @@
 use crate::tensor::Tensor;
+use rayon::prelude::*;
 
 // get (row) vectors from a 2D table given a list of indices
 pub fn gather(y: &mut Tensor<f32>, indices: &Tensor<u32>, table: &Tensor<f32>) {
@@ -103,7 +104,7 @@ pub fn swiglu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
     fn sigmoid(the_x: &f32) -> f32 {
         1.0 / (1.0 + E.powf(-the_x))
     }
-    let _x = _x.iter().map(|the_x| the_x * sigmoid(the_x)).collect::<Vec<f32>>();
+    let _x = _x.par_iter().map(|the_x| the_x * sigmoid(the_x)).collect::<Vec<f32>>();
     let mut idx = 0;
     for the_y in _y.iter_mut() {
         *the_y = *the_y * _x[idx];
@@ -138,7 +139,7 @@ pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor
 
             let mut temp = [0.0; 8];
             _mm256_storeu_ps(&mut temp[0], sum);
-            let mut final_sum :f32 = temp.iter().sum();
+            let mut final_sum :f32 = temp.par_iter().sum();
 
             while k < n {
                 final_sum += a[i * n + k] * b[j * n + k];
