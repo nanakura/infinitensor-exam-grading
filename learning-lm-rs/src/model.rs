@@ -153,7 +153,16 @@ fn self_attention(
     total_seq_len: usize,
     dqkv: usize,
 ) {
-    todo!("Implement self_attention");
+    OP::matmul_transb(att_scores, 0., q, k, 1.);
+    let score_data = unsafe {att_scores.data_mut()};
+    for x in score_data.iter_mut() {
+        *x /= (dqkv as f32).sqrt();
+    }
+    let mut attn = Tensor::new(att_scores.data().to_vec(), att_scores.shape());
+    OP::masked_softmax(&mut attn);
+    let mut attn_v: Tensor<f32> = Tensor::default(attn.shape());
+    OP::matmul_transb(&mut attn_v, 0., &attn, v, 1.); 
+    
 }
 
 fn mlp(
