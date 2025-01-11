@@ -114,19 +114,39 @@ pub fn swiglu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
 // C = beta * C + alpha * A @ B^T
 // hint: You don't need to do an explicit transpose of B
 pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor<f32>, alpha: f32) {
-    let (m, n) = (a.shape()[0], a.shape()[1]);  
+    use std::arch::x86_64::*;
+    let (m, n) = (a.shape()[0], a.shape()[1]);
     let p = b.shape()[0];
-    let c_data = unsafe{c.data_mut()};
+    let c_data = unsafe { c.data_mut() };
     let a = a.data();
     let b = b.data();
+
+    let simd_width = 8;
+
+    unsafe {
     for i in 0..m {
         for j in 0..p {
-            let mut sum = 0.0;
-            for k in 0..n {
-                sum += a[i * n + k] * b[j * n + k];
+            let mut sum = _mm256_setzero_ps();
+
+            let mut k = 0;
+            while k + simd_width <= n {
+                let a_vec = _mm256_loadu_ps(&a[i * n + k]);
+                let b_vec = _mm256_loadu_ps(&b[j * n + k]);
+                sum = _mm256_add_ps(sum, _mm256_mul_ps(a_vec, b_vec));
+                k += simd_width;
             }
-            c_data[i * p + j] = beta * c_data[i*p+j] + alpha *sum;
+
+            let mut temp = [0.0; 8];
+            _mm256_storeu_ps(&mut temp[0], sum);
+            let mut final_sum :f32 = temp.iter().sum();
+
+            while k < n {
+                final_sum += a[i * n + k] * b[j * n + k];
+                k += 1;
+            }
+            c_data[i * p + j] = beta * c_data[i * p + j] + alpha * final_sum;
         }
+    }
     }
 }
 
