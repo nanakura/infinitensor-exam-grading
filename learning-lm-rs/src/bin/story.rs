@@ -1,9 +1,4 @@
-mod config;
-mod kvcache;
-mod model;
-mod operators;
-mod params;
-mod tensor;
+use learning_lm_rust::model;
 
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
