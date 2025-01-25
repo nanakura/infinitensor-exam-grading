@@ -164,20 +164,21 @@ impl Llama<f32> {
         top_k: u32,
         temperature: f32,
     ) -> Vec<u32>{
-        let mut result = Vec::from(token_ids);
+        let mut result = vec![self.bos_token_id];
+        result.extend_from_slice(token_ids);
         let mut cache = self.new_cache();
 
         let input_tensor = Tensor::new(result.clone(), &vec![result.len()]);
         let logits = self.forward(&input_tensor, &mut cache);
         
-        let next_token = OP::random_sample(&logits, top_p, top_k, temperature);
+        let mut next_token = OP::random_sample(&logits, top_p, top_k, temperature);
         result.push(next_token);
 
         while result.len() < max_len {
             let input_tensor = Tensor::new(vec![next_token], &vec![1]);
             let logits = self.forward(&input_tensor, &mut cache);
             
-            let next_token = OP::random_sample(&logits, top_p, top_k, temperature);
+            next_token = OP::random_sample(&logits, top_p, top_k, temperature);
             
             if next_token == self.eos_token_id {
                 break;
