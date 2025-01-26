@@ -116,15 +116,13 @@ impl Llama<f32> {
                 self.dqkv,
             );
 
-            // Projection and residual connection
-            let mut attn_output = Tensor::<f32>::default(&vec![seq_len, self.d]);
-            OP::matmul_transb(&mut attn_output, 0., &hidden_states, &self.params.wo[layer], 1.0);
-            // Manual addition for residual connection
-            let res_data = unsafe { residual.data_mut() };
-            let attn_data = attn_output.data();
-            for i in 0..res_data.len() {
-                res_data[i] += attn_data[i];
-            }
+            OP::matmul_transb(
+                &mut residual,
+                1.,
+                &hidden_states,
+                &self.params.wo[layer],
+                1.,
+            );
 
             // Feed Forward Network
             mlp(
