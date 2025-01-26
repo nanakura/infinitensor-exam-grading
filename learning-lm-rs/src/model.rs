@@ -8,6 +8,8 @@ use crate::params::LLamaParams;
 use crate::tensor::Tensor;
 use safetensors::SafeTensors;
 use std::path::Path;
+use tokenizers::Tokenizer;
+
 pub struct Llama<T> {
     vocab: usize,           // vocab size
     n_layers: usize,        // number of layers
@@ -188,6 +190,46 @@ impl Llama<f32> {
         }
 
         result
+    }
+
+        pub fn chat(
+        &self,
+        promps: &str,
+        cache: &mut KVCache<f32>,
+        tokenizer: &Tokenizer,
+        max_len: usize,
+        top_p: f32,
+        top_k: u32,
+        temperature: f32,
+    ) -> String {
+        let encoding = tokenizer.encode(promps, false).unwrap();
+        let token_ids = encoding.get_ids();
+
+        
+        // 初始推理，处理输入序列
+        let input_tensor = Tensor::new(token_ids.to_vec(), &vec![token_ids.len()]);
+        let logits = self.forward(&input_tensor, cache);
+        
+        // 采样第一个 token
+        let mut next_token = OP::random_sample(&logits, top_p, top_k, temperature);
+        let mut result = vec![next_token];
+
+        // 继续生成，直到达到最大长度或遇到结束符
+        while result.len() < max_len {
+            let input_tensor = Tensor::new(vec![next_token], &vec![1]);
+            let logits = self.forward(&input_tensor, cache);
+            
+            next_token = OP::random_sample(&logits, top_p, top_k, temperature);
+            
+            // 检查是否生成了对话结束标记
+            if next_token == self.eos_token_id {
+                break;
+            }
+            
+            result.push(next_token);
+        }
+
+        tokenizer.decode(&result, true).unwrap()
     }
 }
 
