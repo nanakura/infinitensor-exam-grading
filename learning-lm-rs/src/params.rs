@@ -50,22 +50,12 @@ impl FromBytes for bf16 {
     }
 }
 
-trait BytesExt {
-    fn into_vec<T: FromBytes>(self) -> Vec<T>;
-}
-
-impl BytesExt for &[u8] {
-    fn into_vec<T: FromBytes>(self) -> Vec<T> {
-        T::from_bytes(self)
-    }
-}
-
 impl<T: Copy + Clone + Default + FromBytes> LLamaParams<T> {
     pub(crate) fn from_safetensors(safetensor: &SafeTensors, config: &LlamaConfigJson) -> Self {
         let get_tensor = |name: &str| -> Tensor<T> {
             match safetensor.tensor(name) {
                 Ok(v) => {
-                    let data: Vec<T> = v.data().into_vec();
+                    let data: Vec<T> = T::from_bytes(v.data());
 
                     Tensor::new(data, &v.shape().to_vec())
                 }

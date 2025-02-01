@@ -1,43 +1,8 @@
-use learning_lm_rust::model;
+use learning_lm_rust::{chat, model};
 use std::io::{self, Write};
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
 
-struct Message {
-    role: String,
-    content: String,
-}
-
-struct ChatSession {
-    messages: Vec<Message>,
-}
-
-impl ChatSession {
-    fn new() -> Self {
-        ChatSession {
-            messages: Vec::new(),
-        }
-    }
-
-    fn add_message(&mut self, role: &str, content: &str) {
-        self.messages.push(Message {
-            role: role.to_string(),
-            content: content.to_string(),
-        });
-    }
-
-    fn format_prompt(&self) -> String {
-        let mut prompt = String::new();
-        for msg in &self.messages {
-            prompt.push_str(&format!(
-                "<|im_start|>{}\n{}<|im_end|>\n",
-                msg.role, msg.content
-            ));
-        }
-        prompt.push_str("<|im_start|>assistant\n");
-        prompt
-    }
-}
 
 fn main() {
     let project_dir = env!("CARGO_MANIFEST_DIR");
@@ -45,7 +10,7 @@ fn main() {
     let llama = model::Llama::<f32>::from_safetensors(&model_dir);
     let tokenizer = Tokenizer::from_file(model_dir.join("tokenizer.json")).unwrap();
     let mut cache = llama.new_cache();
-    let mut session = ChatSession::new();
+    let mut session = chat::ChatSession::new();
     println!("欢迎使用聊天助手！输入 'quit' 结束对话。");
 
     session.add_message("system", "You are a helpful assistant");

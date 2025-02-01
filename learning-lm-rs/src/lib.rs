@@ -4,3 +4,4 @@ pub mod model;
 pub mod operators;
 pub mod params;
 pub mod tensor;
+pub mod chat;
