@@ -1,7 +1,7 @@
 use crate::config::LlamaConfigJson;
 use crate::tensor::Tensor;
+use half::{bf16, f16};
 use safetensors::SafeTensors;
-use bytemuck::cast_slice;
 
 pub struct LLamaParams<T> {
     // token_id to embedding lookup table
@@ -22,20 +22,60 @@ pub struct LLamaParams<T> {
     pub lm_head: Tensor<T>,   // (vocab_size, dim)
 }
 
-impl LLamaParams<f32> {
-    pub fn from_safetensors(safetensor: &SafeTensors, config: &LlamaConfigJson) -> Self {
-        let get_tensor = |name: &str| {
+pub(crate) trait FromBytes: Sized {
+    fn from_bytes(bytes: &[u8]) -> Vec<Self>;
+}
+
+impl FromBytes for f32 {
+    fn from_bytes(bytes: &[u8]) -> Vec<Self> {
+        bytemuck::cast_slice(bytes).to_vec()
+    }
+}
+impl FromBytes for f16 {
+    fn from_bytes(bytes: &[u8]) -> Vec<Self> {
+        let expected = std::mem::size_of::<f16>();
+        bytes
+            .chunks_exact(expected)
+            .map(|chunk| f16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect()
+    }
+}
+impl FromBytes for bf16 {
+    fn from_bytes(bytes: &[u8]) -> Vec<Self> {
+        let expected = std::mem::size_of::<bf16>();
+        bytes
+            .chunks_exact(expected)
+            .map(|chunk| bf16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect()
+    }
+}
+
+trait BytesExt {
+    fn into_vec<T: FromBytes>(self) -> Vec<T>;
+}
+
+impl BytesExt for &[u8] {
+    fn into_vec<T: FromBytes>(self) -> Vec<T> {
+        T::from_bytes(self)
+    }
+}
+
+impl<T: Copy + Clone + Default + FromBytes> LLamaParams<T> {
+    pub(crate) fn from_safetensors(safetensor: &SafeTensors, config: &LlamaConfigJson) -> Self {
+        let get_tensor = |name: &str| -> Tensor<T> {
             match safetensor.tensor(name) {
                 Ok(v) => {
-                    let data :Vec<f32>= cast_slice(v.data()).to_vec();
+                    let data: Vec<T> = v.data().into_vec();
+
                     Tensor::new(data, &v.shape().to_vec())
                 }
-                Err(_) =>{
-                    panic!("")
+                Err(_) => {
+                    panic!("Failed to load tensor: {}", name);
                 }
             }
         };
-        let layers = config.num_hidden_layers; 
+
+        let layers = config.num_hidden_layers;
         let embedding_table = if config.tie_word_embeddings {
             get_tensor("lm_head.weight")
         } else {
@@ -72,6 +112,6 @@ impl LLamaParams<f32> {
                 .collect(),
             rms_out_w: get_tensor("model.norm.weight"),
             lm_head: get_tensor("lm_head.weight"),
-        } 
+        }
     }
 }

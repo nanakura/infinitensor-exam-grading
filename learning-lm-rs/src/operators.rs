@@ -1,8 +1,11 @@
+use std::iter::Sum;
+
+use num_traits::Float;
+
 use crate::tensor::Tensor;
-use rayon::prelude::*;
 
 // get (row) vectors from a 2D table given a list of indices
-pub fn gather(y: &mut Tensor<f32>, indices: &Tensor<u32>, table: &Tensor<f32>) {
+pub fn gather<T: Copy + Default>(y: &mut Tensor<T>, indices: &Tensor<u32>, table: &Tensor<T>) {
     let length = indices.size();
     let table_shape = table.shape();
     assert!(table_shape.len() == 2);
@@ -16,7 +19,7 @@ pub fn gather(y: &mut Tensor<f32>, indices: &Tensor<u32>, table: &Tensor<f32>) {
 }
 
 // RoPE: Rotary Positional Embedding
-pub fn rope(y: &mut Tensor<f32>, start_pos: usize, theta: f32) {
+pub fn rope<T: Copy + Default + Float>(y: &mut Tensor<T>, start_pos: usize, theta: T) {
     let shape = y.shape();
     assert!(shape.len() == 3);
     let seq_len = shape[0];
@@ -29,7 +32,8 @@ pub fn rope(y: &mut Tensor<f32>, start_pos: usize, theta: f32) {
             for i in 0..d / 2 {
                 let a = data[tok * n_heads * d + head * d + i];
                 let b = data[tok * n_heads * d + head * d + i + d / 2];
-                let freq = pos as f32 / theta.powf((i * 2) as f32 / d as f32);
+                let freq = T::from(pos).unwrap()
+                    / theta.powf(T::from(i * 2).unwrap() / T::from(d).unwrap());
                 let (sin, cos) = freq.sin_cos();
                 data[tok * n_heads * d + head * d + i] = a * cos - b * sin;
                 data[tok * n_heads * d + head * d + i + d / 2] = b * cos + a * sin;
@@ -40,7 +44,7 @@ pub fn rope(y: &mut Tensor<f32>, start_pos: usize, theta: f32) {
 
 // softmax(x) = exp(x - max) / sum(exp(x - max))
 // y = softmax(mask(x))
-pub fn masked_softmax(y: &mut Tensor<f32>) {
+pub fn masked_softmax<T: Copy + Default + Float + Sum>(y: &mut Tensor<T>) {
     let ndim = y.shape().len();
     assert!(ndim >= 2);
     let seq_len = y.shape()[ndim - 2];
@@ -63,29 +67,34 @@ pub fn masked_softmax(y: &mut Tensor<f32>) {
                     data[offset + j] = e;
                     e
                 })
-                .sum::<f32>();
+                .sum::<T>();
 
-            (0..boundary).for_each(|j| data[offset + j] /= sum);
-            (boundary..total_seq_len).for_each(|j| data[offset + j] = 0.0);
+            (0..boundary).for_each(|j| data[offset + j] = data[offset + j] / sum);
+            (boundary..total_seq_len).for_each(|j| data[offset + j] = T::zero());
         }
     }
 }
 
-pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
+pub fn rms_norm<T: Copy + Default + Float + Sum>(
+    y: &mut Tensor<T>,
+    x: &Tensor<T>,
+    w: &Tensor<T>,
+    epsilon: T,
+) {
     let len = y.size();
     assert!(len == x.size());
     let shape = y.shape().clone();
-    let y_data = unsafe {y.data_mut()};
+    let y_data = unsafe { y.data_mut() };
     let x = x.data();
     let w = w.data();
     for i in 0..shape[0] {
-        let mut sum = 0.0;
+        let mut sum = T::zero();
         for j in 0..shape[1] {
-            sum += x[i*shape[1] + j] * x[i*shape[1] + j];
+            sum = sum + x[i * shape[1] + j] * x[i * shape[1] + j];
         }
-        let rms = (sum / shape[1] as f32 + epsilon).sqrt();
+        let rms = (sum / T::from(shape[1]).unwrap() + epsilon).sqrt();
         for j in 0..shape[1] {
-            let idx = i*shape[1] + j;
+            let idx = i * shape[1] + j;
             y_data[idx] = w[j] * (x[idx] / rms);
         }
     }
@@ -93,18 +102,17 @@ pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: 
 
 // y = silu(x) * y
 // hint: this is an element-wise operation
-pub fn swiglu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
-    use std::f32::consts::E;
+pub fn swiglu<T: Copy + Default + Float + Sum>(y: &mut Tensor<T>, x: &Tensor<T>) {
     let len = y.size();
     assert!(len == x.size());
 
     let _y = unsafe { y.data_mut() };
     let _x = x.data();
 
-    fn sigmoid(the_x: &f32) -> f32 {
-        1.0 / (1.0 + E.powf(-the_x))
-    }
-    let _x = _x.par_iter().map(|the_x| the_x * sigmoid(the_x)).collect::<Vec<f32>>();
+    let _x = _x
+        .iter()
+        .map(|the_x| *the_x * (T::one() / (T::one() + (-*the_x).exp())))
+        .collect::<Vec<T>>();
     let mut idx = 0;
     for the_y in _y.iter_mut() {
         *the_y = *the_y * _x[idx];
@@ -114,41 +122,52 @@ pub fn swiglu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
 
 // C = beta * C + alpha * A @ B^T
 // hint: You don't need to do an explicit transpose of B
-pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor<f32>, alpha: f32) {
-    let (m, n) = (a.shape()[0], a.shape()[1]);  
+pub fn matmul_transb<T: Copy + Default + Float>(
+    c: &mut Tensor<T>,
+    beta: T,
+    a: &Tensor<T>,
+    b: &Tensor<T>,
+    alpha: T,
+) {
+    let (m, n) = (a.shape()[0], a.shape()[1]);
     let p = b.shape()[0];
-    let c_data = unsafe{c.data_mut()};
+    let c_data = unsafe { c.data_mut() };
     let a = a.data();
     let b = b.data();
     for i in 0..m {
         for j in 0..p {
-            let mut sum = 0.0;
+            let mut sum = T::zero();
             for k in 0..n {
-                sum += a[i * n + k] * b[j * n + k];
+                sum = sum + a[i * n + k] * b[j * n + k];
             }
-            c_data[i * p + j] = beta * c_data[i*p+j] + alpha *sum;
+            c_data[i * p + j] = beta * c_data[i * p + j] + alpha * sum;
         }
     }
 }
 
 // Dot product of two tensors (treated as vectors)
 #[allow(unused)]
-pub fn dot(x: &Tensor<f32>, y: &Tensor<f32>) -> f32 {
+pub fn dot<T: Copy + Default + Float>(x: &Tensor<T>, y: &Tensor<T>) -> T {
     let len = x.size();
     assert!(len == y.size());
     let x_ = x.data();
     let y_ = y.data();
-    let mut sum = 0.0;
+    let mut sum = T::zero();
     for i in 0..len {
-        sum += x_[i] * y_[i];
+        sum = sum + x_[i] * y_[i];
     }
     sum
 }
 
 // Sample a index from a tensor (treated as a probability vector)
-pub fn random_sample(x: &Tensor<f32>, top_p: f32, top_k: u32, temperature: f32) -> u32 {
+pub fn random_sample<T: Copy + Default + Float>(
+    x: &Tensor<T>,
+    top_p: T,
+    top_k: u32,
+    temperature: T,
+) -> u32 {
     assert!(x.shape()[x.shape().len() - 1] == x.size());
-    if temperature <= 0. || top_k < 2 || top_p <= 0. {
+    if temperature <= T::zero() || top_k < 2 || top_p <= T::zero() {
         return x
             .data()
             .iter()
@@ -179,11 +198,11 @@ pub fn random_sample(x: &Tensor<f32>, top_p: f32, top_k: u32, temperature: f32) 
             }
         }
     }
-    impl From<(usize, &f32)> for Probability {
+    impl<T: Float> From<(usize, &T)> for Probability {
         #[inline]
-        fn from((i, p): (usize, &f32)) -> Self {
+        fn from((i, p): (usize, &T)) -> Self {
             Self {
-                val: p.clone(),
+                val: p.to_f32().unwrap(),
                 tok: i as _,
             }
         }
@@ -200,11 +219,12 @@ pub fn random_sample(x: &Tensor<f32>, top_p: f32, top_k: u32, temperature: f32) 
     let max = core::mem::replace(&mut logits[0].val, 1.);
     // softmax & sum
     for i in 1..logits.len() {
-        logits[i].val = logits[i - 1].val + ((logits[i].val - max) / temperature).exp();
+        logits[i].val =
+            logits[i - 1].val + ((logits[i].val - max) / temperature.to_f32().unwrap()).exp();
     }
     // topk & topp & random
     let pk = logits[(top_k as usize).min(logits.len()) - 1].val;
-    let pp = logits[logits.len() - 1].val * top_p;
+    let pp = logits[logits.len() - 1].val * top_p.to_f32().unwrap();
     let plimit = rand::random::<f32>() * f32::min(pk, pp);
     // sample
     logits.iter().find(|p| p.val >= plimit).unwrap().tok
