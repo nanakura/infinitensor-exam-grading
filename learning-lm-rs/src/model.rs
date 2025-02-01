@@ -124,7 +124,6 @@ impl Llama<f32> {
                 1.,
             );
 
-            // Feed Forward Network
             mlp(
                 &mut residual,
                 &mut hidden_states,
@@ -204,22 +203,18 @@ impl Llama<f32> {
         let token_ids = encoding.get_ids();
 
         
-        // 初始推理，处理输入序列
         let input_tensor = Tensor::new(token_ids.to_vec(), &vec![token_ids.len()]);
         let logits = self.forward(&input_tensor, cache);
         
-        // 采样第一个 token
         let mut next_token = OP::random_sample(&logits, top_p, top_k, temperature);
         let mut result = vec![next_token];
 
-        // 继续生成，直到达到最大长度或遇到结束符
         while result.len() < max_len {
             let input_tensor = Tensor::new(vec![next_token], &vec![1]);
             let logits = self.forward(&input_tensor, cache);
             
             next_token = OP::random_sample(&logits, top_p, top_k, temperature);
             
-            // 检查是否生成了对话结束标记
             if next_token == self.eos_token_id {
                 break;
             }

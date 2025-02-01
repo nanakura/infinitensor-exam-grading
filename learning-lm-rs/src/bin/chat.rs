@@ -61,10 +61,8 @@ fn main() {
             break;
         }
 
-        // 添加用户消息
         session.add_message("user", input);
 
-        // 生成提示并获取回复
         let prompt = session.format_prompt();
         let response = llama.chat(
             &prompt,
@@ -76,12 +74,10 @@ fn main() {
             1., 
         );
 
-        // 添加助手消息并打印
         println!("Asistant: {}", response);
         session.add_message("assistant", &response);
     }
 
-    println!("再见！");
 }
 
 #[cfg(test)]

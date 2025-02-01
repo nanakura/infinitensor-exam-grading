@@ -36,8 +36,13 @@ impl LLamaParams<f32> {
             }
         };
         let layers = config.num_hidden_layers; 
+        let embedding_table = if config.tie_word_embeddings {
+            get_tensor("lm_head.weight")
+        } else {
+            get_tensor("model.embed_tokens.weight")
+        };
         Self {
-            embedding_table: get_tensor("lm_head.weight"),
+            embedding_table: embedding_table,
             rms_att_w: (0..layers)
                 .map(|i| get_tensor(&format!("model.layers.{i}.input_layernorm.weight")))
                 .collect(),
