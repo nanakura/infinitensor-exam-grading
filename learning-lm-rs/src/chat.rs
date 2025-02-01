@@ -1,8 +1,11 @@
+
+#[derive(Clone)]
 pub struct Message {
     role: String,
     content: String,
 }
 
+#[derive(Clone)]
 pub struct ChatSession {
     messages: Vec<Message>,
 }

@@ -1,5 +1,6 @@
 use std::{slice, sync::Arc, vec};
 
+#[derive(Clone)]
 pub struct Tensor<T> {
     data: Arc<Box<[T]>>,
     shape: Vec<usize>,
