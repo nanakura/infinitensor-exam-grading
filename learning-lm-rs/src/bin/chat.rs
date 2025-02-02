@@ -3,7 +3,6 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
 
-
 fn main() {
     let project_dir = env!("CARGO_MANIFEST_DIR");
     let model_dir = PathBuf::from(project_dir).join("models").join("chat");

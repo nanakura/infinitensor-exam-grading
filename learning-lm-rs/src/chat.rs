@@ -1,4 +1,3 @@
-
 #[derive(Clone)]
 pub struct Message {
     role: String,

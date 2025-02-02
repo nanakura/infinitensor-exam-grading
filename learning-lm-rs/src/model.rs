@@ -4,7 +4,7 @@ use std::vec;
 
 use crate::config::LlamaConfigJson;
 use crate::kvcache::KVCache;
-use crate::operators::{self as OP};
+use crate::operators_cpu::{self as OP};
 use crate::params::{FromBytes, LLamaParams};
 use crate::tensor::Tensor;
 use num_traits::Float;

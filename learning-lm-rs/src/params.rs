@@ -23,7 +23,7 @@ pub struct LLamaParams<T> {
     pub lm_head: Tensor<T>,   // (vocab_size, dim)
 }
 
-pub(crate) trait FromBytes: Sized {
+pub trait FromBytes: Sized {
     fn from_bytes(bytes: &[u8]) -> Vec<Self>;
 }
 
