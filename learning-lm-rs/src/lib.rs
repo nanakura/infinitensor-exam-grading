@@ -4,8 +4,8 @@ pub mod kvcache;
 pub mod model_cpu;
 #[cfg(feature = "cuda")]
 pub mod model_cuda;
+pub mod operators_cpu;
 #[cfg(feature = "cuda")]
 pub mod operators_cuda;
-pub mod operators_cpu;
 pub mod params;
 pub mod tensor;

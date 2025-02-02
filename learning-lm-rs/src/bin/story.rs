@@ -1,4 +1,3 @@
-
 #[cfg(not(feature = "cuda"))]
 use learning_lm_rust::model_cpu::{self as model};
 #[cfg(feature = "cuda")]

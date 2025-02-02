@@ -2,16 +2,26 @@ use std::iter::Sum;
 
 use cudarc::cublas::Gemm;
 use cudarc::cublas::{sys::cublasOperation_t, CudaBlas, GemmConfig};
-use cudarc::driver::CudaSlice;
+use cudarc::driver::{CudaFunction, CudaSlice};
 use cudarc::driver::CudaView;
-use cudarc::driver::{CudaDevice, DeviceSlice};
+use cudarc::driver::{CudaDevice, DeviceSlice, LaunchAsync, LaunchConfig};
 use half::{bf16, f16};
 use num_traits::Float;
 use std::sync::Arc;
 
 use crate::tensor::Tensor;
 
+mod cuda_kernels;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DType {
+    F16,
+    BF16,
+    F32,
+}
+
 pub trait OpDType: Sized + cudarc::driver::DeviceRepr {
+    const DTYPE: DType;
     fn gemm(
         blas: &CudaBlas,
         cfg: GemmConfig<Self>,
@@ -22,6 +32,7 @@ pub trait OpDType: Sized + cudarc::driver::DeviceRepr {
 }
 
 impl OpDType for f32 {
+    const DTYPE: DType = DType::F32;
     fn gemm(
         blas: &CudaBlas,
         cfg: GemmConfig<f32>,
@@ -36,6 +47,7 @@ impl OpDType for f32 {
 }
 
 impl OpDType for f16 {
+    const DTYPE: DType = DType::F16;
     fn gemm(
         blas: &CudaBlas,
         cfg: GemmConfig<f16>,
@@ -50,6 +62,7 @@ impl OpDType for f16 {
 }
 
 impl OpDType for bf16 {
+    const DTYPE: DType = DType::BF16;
     fn gemm(
         blas: &CudaBlas,
         cfg: GemmConfig<bf16>,
@@ -69,12 +82,53 @@ pub struct CudaOperator {
     blas: Arc<CudaBlas>,
 }
 
+fn kernel_name<T: OpDType>(base_name: &str) -> String {
+    let dtype_str = match T::DTYPE {
+        DType::F16 => "f16",
+        DType::BF16 => "bf16",
+        DType::F32 => "f32",
+    };
+    format!("{base_name}_{dtype_str}")
+}
+
 impl CudaOperator {
     pub fn new() -> Self {
         let dev = CudaDevice::new(0).unwrap();
         let blas = Arc::new(CudaBlas::new(dev.clone()).unwrap());
+
+        // let rms_norm_ptx = compile_ptx(cuda_kernel_srcs::RMS_NORM_SRC).unwrap();
+        // dev.load_ptx(
+        //     rms_norm_ptx,
+        //     "rms_kernels",
+        //     &[
+        //         "compute_rms_f16",
+        //         "compute_rms_bf16",
+        //         "compute_rms_f32",
+        //         "apply_rms_norm_f16",
+        //         "apply_rms_norm_bf16",
+        //         "apply_rms_norm_f32",
+        //     ],
+        // )
+        // .unwrap();
+
         Self { dev, blas }
     }
+
+    fn get_or_load_func(&self, module_name: &str, ptx: &'static str) -> CudaFunction {
+        if !self.dev.has_func(module_name, module_name) {
+            // Leaking the string here is a bit sad but we need a &'static str and this is only
+            // done once per kernel name.
+            let static_module_name = Box::leak(module_name.to_string().into_boxed_str());
+            self.dev.load_ptx(ptx.into(), module_name, &[static_module_name]).unwrap();
+        }
+        let func = self
+            .dev
+            .get_func(module_name, module_name).unwrap();
+            // Clippy recommends this `ok_or` rather than `ok_or_else` so hopefully the compiler is
+            // able to only build the error value if needed.
+        func
+    }
+
     // C = beta * C + alpha * A @ B^T
     pub fn matmul_transb<T: OpDType + Copy + Default>(
         &self,
@@ -134,6 +188,73 @@ impl CudaOperator {
 
         // Transfer result back to host
         dev.dtoh_sync_copy_into(&c_dev, c_host).unwrap();
+    }
+
+    pub fn rms_norm<T: OpDType + Copy + Default + Float>(
+        &self,
+        y: &mut Tensor<T>,
+        x: &Tensor<T>,
+        w: &Tensor<T>,
+        epsilon: T,
+    ) {
+        let m = x.shape()[0];
+        let n = x.shape()[1];
+        assert_eq!(y.shape(), &[m, n]);
+        assert_eq!(w.shape(), &[n]);
+
+        // 将数据拷贝到设备
+        let x_host = x.data();
+        let w_host = w.data();
+        let y_host: &mut [T] = unsafe {
+            std::slice::from_raw_parts_mut(y.data_mut().as_mut_ptr() as *mut T, y.data().len())
+        };
+        let x_dev = self.dev.htod_sync_copy(x_host).unwrap();
+        let w_dev = self.dev.htod_sync_copy(w_host).unwrap();
+        let mut y_dev = self.dev.htod_sync_copy(y_host).unwrap();
+
+        // 分配RMS临时存储
+        let rms_host = vec![T::zero(); m];
+        let rms_dev = self.dev.htod_sync_copy(&rms_host).unwrap();
+
+        // 计算RMS
+        let compute_rms =
+        self.get_or_load_func(&kernel_name::<T>("compute_rms"), cuda_kernels::RMS_NORM);
+        let block = 256;
+        let grid = (m as u32 + block - 1) / block;
+        unsafe {
+            compute_rms
+                .launch(
+                    LaunchConfig {
+                        block_dim: (block, 1, 1),
+                        grid_dim: (grid, 1, 1),
+                        shared_mem_bytes: 0,
+                    },
+                    (&rms_dev, &x_dev, m as i32, n as i32, epsilon),
+                )
+                .unwrap();
+        }
+
+        // 应用归一化和权重
+        let apply_norm = 
+        self.get_or_load_func(&kernel_name::<T>("apply_rms_norm"), cuda_kernels::RMS_NORM);
+        let total = (m * n) as u32;
+        let block_apply = 256;
+        let grid_apply = (total + block_apply - 1) / block_apply;
+        unsafe {
+            apply_norm
+                .launch(
+                    LaunchConfig {
+                        block_dim: (block_apply, 1, 1),
+                        grid_dim: (grid_apply, 1, 1),
+                        shared_mem_bytes: 0,
+                    },
+                    (&mut y_dev, &x_dev, &w_dev, &rms_dev, m as i32, n as i32),
+                )
+                .unwrap();
+        }
+
+        // 拷贝结果回主机
+        self.dev.dtoh_sync_copy_into(&y_dev, y_host).unwrap();
     }
 }
 
@@ -355,7 +476,8 @@ fn test_rms_norm() {
     let mut y = Tensor::<f32>::new(vec![1., 2., 3., 4.], &vec![2, 2]);
     let x = Tensor::<f32>::new(vec![1., 2., 3., 4.], &vec![2, 2]);
     let w = Tensor::<f32>::new(vec![1., 2.], &vec![2]);
-    rms_norm(&mut y, &x, &w, 1e-6);
+    let operator = CudaOperator::new();
+    operator.rms_norm(&mut y, &x, &w, 1e-6);
     assert!(y.close_to(
         &Tensor::<f32>::new(
             vec![0.6324554, 2.5298216, 0.8485281, 2.2627416],
