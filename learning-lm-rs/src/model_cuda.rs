@@ -360,7 +360,6 @@ pub fn test_mlp() {
     let w_gate = Tensor::<f32>::new(vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6], &vec![di, d]);
     let rms_w = Tensor::<f32>::new(vec![1., 1.], &vec![d]);
     let eps = 1e-6;
-
     let op = OP::CudaOperator::new();
     mlp(
         &op,

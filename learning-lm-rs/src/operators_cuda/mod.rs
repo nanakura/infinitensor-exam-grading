@@ -96,21 +96,6 @@ impl CudaOperator {
         let dev = CudaDevice::new(0).unwrap();
         let blas = Arc::new(CudaBlas::new(dev.clone()).unwrap());
 
-        // let rms_norm_ptx = compile_ptx(cuda_kernel_srcs::RMS_NORM_SRC).unwrap();
-        // dev.load_ptx(
-        //     rms_norm_ptx,
-        //     "rms_kernels",
-        //     &[
-        //         "compute_rms_f16",
-        //         "compute_rms_bf16",
-        //         "compute_rms_f32",
-        //         "apply_rms_norm_f16",
-        //         "apply_rms_norm_bf16",
-        //         "apply_rms_norm_f32",
-        //     ],
-        // )
-        // .unwrap();
-
         Self { dev, blas }
     }
 
@@ -188,6 +173,7 @@ impl CudaOperator {
 
         // Transfer result back to host
         dev.dtoh_sync_copy_into(&c_dev, c_host).unwrap();
+        dev.synchronize().unwrap();
     }
 
     pub fn rms_norm<T: OpDType + Copy + Default + Float>(
@@ -197,63 +183,41 @@ impl CudaOperator {
         w: &Tensor<T>,
         epsilon: T,
     ) {
-        let m = x.shape()[0];
-        let n = x.shape()[1];
-        assert_eq!(y.shape(), &[m, n]);
-        assert_eq!(w.shape(), &[n]);
+        let len = y.size();
+        assert!(len == x.size());
+        let m = x.shape()[1];  
+        let n = x.shape()[0];  
 
-        // 将数据拷贝到设备
         let x_host = x.data();
         let w_host = w.data();
-        let y_host: &mut [T] = unsafe {
-            std::slice::from_raw_parts_mut(y.data_mut().as_mut_ptr() as *mut T, y.data().len())
-        };
+        let y_host: &mut [T] = unsafe{y.data_mut()};
         let x_dev = self.dev.htod_sync_copy(x_host).unwrap();
         let w_dev = self.dev.htod_sync_copy(w_host).unwrap();
         let mut y_dev = self.dev.htod_sync_copy(y_host).unwrap();
 
-        // 分配RMS临时存储
-        let rms_host = vec![T::zero(); m];
-        let rms_dev = self.dev.htod_sync_copy(&rms_host).unwrap();
+        let kname = kernel_name::<T>("rmsnorm");
+        let func = self.get_or_load_func(&kname, candle_kernels::REDUCE);
+        
+        let block_size = 256; 
+        let block_dim = (block_size, 1, 1);
+        let grid_dim = (n as u32, 1, 1); // 每行一个block
+        
+        let cfg = LaunchConfig {
+            block_dim,
+            grid_dim,
+            shared_mem_bytes: 0,
+        };
 
-        // 计算RMS
-        let compute_rms =
-        self.get_or_load_func(&kernel_name::<T>("compute_rms"), cuda_kernels::RMS_NORM);
-        let block = 256;
-        let grid = (m as u32 + block - 1) / block;
-        unsafe {
-            compute_rms
-                .launch(
-                    LaunchConfig {
-                        block_dim: (block, 1, 1),
-                        grid_dim: (grid, 1, 1),
-                        shared_mem_bytes: 0,
-                    },
-                    (&rms_dev, &x_dev, m as i32, n as i32, epsilon),
-                )
-                .unwrap();
-        }
+        let params = (
+            &x_dev, 
+            &mut y_dev, 
+            &w_dev,
+            m as i32,
+            block_size,
+            epsilon.to_f32().unwrap()
+        );
+        unsafe { func.launch(cfg, params).unwrap() };
 
-        // 应用归一化和权重
-        let apply_norm = 
-        self.get_or_load_func(&kernel_name::<T>("apply_rms_norm"), cuda_kernels::RMS_NORM);
-        let total = (m * n) as u32;
-        let block_apply = 256;
-        let grid_apply = (total + block_apply - 1) / block_apply;
-        unsafe {
-            apply_norm
-                .launch(
-                    LaunchConfig {
-                        block_dim: (block_apply, 1, 1),
-                        grid_dim: (grid_apply, 1, 1),
-                        shared_mem_bytes: 0,
-                    },
-                    (&mut y_dev, &x_dev, &w_dev, &rms_dev, m as i32, n as i32),
-                )
-                .unwrap();
-        }
-
-        // 拷贝结果回主机
         self.dev.dtoh_sync_copy_into(&y_dev, y_host).unwrap();
     }
 }
@@ -497,6 +461,72 @@ fn test_matmul_transb() {
     operator.matmul_transb(&mut c, 1., &a, &b, 1.);
     assert!(c.close_to(
         &Tensor::<f32>::new(vec![15., 34., 35., 81.], &vec![2, 2]),
+        1e-3
+    ));
+}
+
+#[test]
+fn test_mulmat_transb_comprehensive() {
+    // Test 1: 1x1 matrices
+    let mut c = Tensor::<f32>::new(vec![2.], &vec![1, 1]);
+    let a = Tensor::<f32>::new(vec![3.], &vec![1, 1]);
+    let b = Tensor::<f32>::new(vec![4.], &vec![1, 1]);
+    let operator = CudaOperator::new();
+    operator.matmul_transb(&mut c, 0.5, &a, &b, 2.0);
+    assert!(c.close_to(&Tensor::<f32>::new(vec![25.], &vec![1, 1]), 1e-3));
+
+    // Test 2: Zero matrix
+    let mut c = Tensor::<f32>::new(vec![1., 2., 3., 4.], &vec![2, 2]);
+    let a = Tensor::<f32>::new(vec![0., 0., 0., 0., 0., 0.], &vec![2, 3]);
+    let b = Tensor::<f32>::new(vec![1., 2., 3., 4., 5., 6.], &vec![2, 3]);
+    operator.matmul_transb(&mut c, 1.0, &a, &b, 1.0);
+    assert!(c.close_to(&Tensor::<f32>::new(vec![1., 2., 3., 4.], &vec![2, 2]), 1e-3));
+
+    // Test 3: Identity matrix
+    let mut c = Tensor::<f32>::new(vec![0., 0., 0., 0.], &vec![2, 2]);
+    let a = Tensor::<f32>::new(vec![1., 0., 0., 1.], &vec![2, 2]);
+    let b = Tensor::<f32>::new(vec![1., 0., 0., 1.], &vec![2, 2]);
+    operator.matmul_transb(&mut c, 0.0, &a, &b, 1.0);
+    assert!(c.close_to(&Tensor::<f32>::new(vec![1., 0., 0., 1.], &vec![2, 2]), 1e-3));
+
+    // Test 4: Large matrices and precision
+    let mut c = Tensor::<f32>::new(vec![0.; 16], &vec![4, 4]);
+    let a = Tensor::<f32>::new((0..32).map(|x| x as f32).collect(), &vec![4, 8]);
+    let b = Tensor::<f32>::new((0..32).map(|x| x as f32).collect(), &vec![4, 8]);
+    operator.matmul_transb(&mut c, 0.0, &a, &b, 1.0);
+    let expected = Tensor::<f32>::new(
+        vec![
+            140., 364., 588., 812., 364., 1100., 1836., 2572., 588., 1836., 3084., 4332., 812.,
+            2572., 4332., 6092.,
+        ],
+        &vec![4, 4],
+    );
+    assert!(c.close_to(&expected, 1e-3));
+
+    // Test 5: Different alpha and beta combinations
+    let mut c = Tensor::<f32>::new(vec![1., 2., 3., 4.], &vec![2, 2]);
+    let a = Tensor::<f32>::new(vec![1., 2., 3., 4.], &vec![2, 2]);
+    let b = Tensor::<f32>::new(vec![1., 2., 3., 4.], &vec![2, 2]);
+    operator.matmul_transb(&mut c, 2.0, &a, &b, 3.0);
+    assert!(c.close_to(
+        &Tensor::<f32>::new(vec![17., 37., 39., 83.], &vec![2, 2]),
+        1e-3
+    ));
+}
+
+
+
+#[test]
+pub fn test_mulmat_transb2() {
+    let a = Tensor::<f32>::new(vec![0.9999995, 0.9999995, 0.9999995, 0.9999995, 0.9999995, 0.9999995, 0.9999995, 0.9999995], &vec![4,2]);
+    let b = Tensor::<f32>::new(vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6], &vec![3, 2]);
+    let mut c = Tensor::<f32>::default(&vec![4, 3]);
+
+    let op = CudaOperator::new();
+    op.matmul_transb(&mut c, 0., & a, & b, 1.);
+    //println!("{:?}", c.data());
+    assert!(c.close_to(
+        &Tensor::<f32>::new(vec![0.29999986, 0.6999997, 1.0999994, 0.29999986, 0.6999997, 1.0999994, 0.29999986, 0.6999997, 1.0999994, 0.29999986, 0.6999997, 1.0999994], &vec![4,3]),
         1e-3
     ));
 }
