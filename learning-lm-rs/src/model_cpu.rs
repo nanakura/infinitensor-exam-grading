@@ -28,7 +28,7 @@ pub struct Llama<T> {
     eos_token_id: u32,      // end token id
 }
 
-impl<T: Copy + Clone + Default + FromBytes + Float + Sum> Llama<T> {
+impl<T: Copy + Default + FromBytes + Float + Sum> Llama<T> {
     pub fn from_safetensors(model_dir: impl AsRef<Path>) -> Self {
         let config = File::open(model_dir.as_ref().join("config.json")).unwrap();
         let config: LlamaConfigJson = serde_json::from_reader(config).unwrap();

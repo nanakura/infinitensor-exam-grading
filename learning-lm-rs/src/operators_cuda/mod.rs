@@ -76,7 +76,7 @@ impl CudaOperator {
         Self { dev, blas }
     }
     // C = beta * C + alpha * A @ B^T
-    pub fn matmul_transb<T: OpDType + Copy + Clone + Default>(
+    pub fn matmul_transb<T: OpDType + Copy + Default>(
         &self,
         c: &mut Tensor<T>,
         beta: T,
@@ -253,31 +253,6 @@ pub fn swiglu<T: Copy + Default + Float + Sum>(y: &mut Tensor<T>, x: &Tensor<T>)
     }
 }
 
-// C = beta * C + alpha * A @ B^T
-// hint: You don't need to do an explicit transpose of B
-pub fn matmul_transb<T: Copy + Default + Float>(
-    c: &mut Tensor<T>,
-    beta: T,
-    a: &Tensor<T>,
-    b: &Tensor<T>,
-    alpha: T,
-) {
-    let (m, n) = (a.shape()[0], a.shape()[1]);
-    let p = b.shape()[0];
-    let c_data = unsafe { c.data_mut() };
-    let a = a.data();
-    let b = b.data();
-    for i in 0..m {
-        for j in 0..p {
-            let mut sum = T::zero();
-            for k in 0..n {
-                sum = sum + a[i * n + k] * b[j * n + k];
-            }
-            c_data[i * p + j] = beta * c_data[i * p + j] + alpha * sum;
-        }
-    }
-}
-
 // Dot product of two tensors (treated as vectors)
 #[allow(unused)]
 pub fn dot<T: Copy + Default + Float>(x: &Tensor<T>, y: &Tensor<T>) -> T {
@@ -395,7 +370,9 @@ fn test_matmul_transb() {
     let mut c = Tensor::<f32>::new(vec![1., 2., 3., 4.], &vec![2, 2]);
     let a = Tensor::<f32>::new(vec![1., 2., 3., 4., 5., 6.], &vec![2, 3]);
     let b = Tensor::<f32>::new(vec![1., 2., 3., 4., 5., 6.], &vec![2, 3]);
-    matmul_transb(&mut c, 1., &a, &b, 1.);
+
+    let operator = CudaOperator::new();
+    operator.matmul_transb(&mut c, 1., &a, &b, 1.);
     assert!(c.close_to(
         &Tensor::<f32>::new(vec![15., 34., 35., 81.], &vec![2, 2]),
         1e-3

@@ -1,4 +1,8 @@
-use learning_lm_rust::model;
+
+#[cfg(not(feature = "cuda"))]
+use learning_lm_rust::model_cpu::{self as model};
+#[cfg(feature = "cuda")]
+use learning_lm_rust::model_cuda::{self as model};
 
 use std::path::PathBuf;
 use tokenizers::Tokenizer;

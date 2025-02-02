@@ -1,7 +1,11 @@
 use learning_lm_rust::chat::ChatSession;
 use learning_lm_rust::kvcache::KVCache;
-use learning_lm_rust::model::Llama;
-use learning_lm_rust::{chat, model};
+use learning_lm_rust::chat;
+#[cfg(not(feature = "cuda"))]
+use learning_lm_rust::model_cpu::{self as model};
+#[cfg(feature = "cuda")]
+use learning_lm_rust::model_cuda::{self as model};
+use model::Llama;
 use ntex::web::{self, HttpResponse};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
