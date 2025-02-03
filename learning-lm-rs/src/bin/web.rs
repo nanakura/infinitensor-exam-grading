@@ -2,7 +2,7 @@ use learning_lm_rust::chat;
 use learning_lm_rust::chat::ChatSession;
 use learning_lm_rust::kvcache::KVCache;
 #[cfg(not(feature = "cuda"))]
-use learning_lm_rust::model_cpu::{self as model};
+use learning_lm_rust::model::{self as model};
 #[cfg(feature = "cuda")]
 use learning_lm_rust::model_cuda::{self as model};
 use model::Llama;

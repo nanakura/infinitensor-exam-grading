@@ -1,10 +1,10 @@
 use std::iter::Sum;
 
 use cudarc::cublas::Gemm;
-use cudarc::cublas::{sys::cublasOperation_t, CudaBlas, GemmConfig};
-use cudarc::driver::{CudaFunction, CudaSlice};
+use cudarc::cublas::{CudaBlas, GemmConfig};
 use cudarc::driver::CudaView;
-use cudarc::driver::{CudaDevice, DeviceSlice, LaunchAsync, LaunchConfig};
+use cudarc::driver::{CudaDevice, LaunchAsync, LaunchConfig};
+use cudarc::driver::{CudaFunction, CudaSlice};
 use half::{bf16, f16};
 use num_traits::Float;
 use std::sync::Arc;
@@ -104,13 +104,13 @@ impl CudaOperator {
             // Leaking the string here is a bit sad but we need a &'static str and this is only
             // done once per kernel name.
             let static_module_name = Box::leak(module_name.to_string().into_boxed_str());
-            self.dev.load_ptx(ptx.into(), module_name, &[static_module_name]).unwrap();
+            self.dev
+                .load_ptx(ptx.into(), module_name, &[static_module_name])
+                .unwrap();
         }
-        let func = self
-            .dev
-            .get_func(module_name, module_name).unwrap();
-            // Clippy recommends this `ok_or` rather than `ok_or_else` so hopefully the compiler is
-            // able to only build the error value if needed.
+        let func = self.dev.get_func(module_name, module_name).unwrap();
+        // Clippy recommends this `ok_or` rather than `ok_or_else` so hopefully the compiler is
+        // able to only build the error value if needed.
         func
     }
 
@@ -189,14 +189,14 @@ impl CudaOperator {
 
         let x_host = x.data();
         let w_host = w.data();
-        let y_host: &mut [T] = unsafe{y.data_mut()};
+        let y_host: &mut [T] = unsafe { y.data_mut() };
         let x_dev = self.dev.htod_sync_copy(x_host).unwrap();
         let w_dev = self.dev.htod_sync_copy(w_host).unwrap();
         let mut y_dev = self.dev.htod_sync_copy(y_host).unwrap();
 
         let kname = kernel_name::<T>("rms_norm");
         let func = self.get_or_load_func(&kname, cuda_kernels::RMSNORM);
-        
+
         let block_dim = 256; // 使用1维块，每个块256线程
         let grid_dim = m as u32; // 每个样本一个块
 
@@ -208,14 +208,7 @@ impl CudaOperator {
             shared_mem_bytes,
         };
 
-        let params = (
-            &mut y_dev,
-            &x_dev,
-            &w_dev,
-            epsilon,
-            m as i32,
-            n as i32,
-        );
+        let params = (&mut y_dev, &x_dev, &w_dev, epsilon, m as i32, n as i32);
         unsafe { func.launch(cfg, params).unwrap() };
 
         self.dev.dtoh_sync_copy_into(&y_dev, y_host).unwrap();
@@ -514,19 +507,28 @@ fn test_mulmat_transb_comprehensive() {
     ));
 }
 
-
-
 #[test]
 pub fn test_mulmat_transb2() {
-    let a = Tensor::<f32>::new(vec![0.9999995, 0.9999995, 0.9999995, 0.9999995, 0.9999995, 0.9999995, 0.9999995, 0.9999995], &vec![4,2]);
+    let a = Tensor::<f32>::new(
+        vec![
+            0.9999995, 0.9999995, 0.9999995, 0.9999995, 0.9999995, 0.9999995, 0.9999995, 0.9999995,
+        ],
+        &vec![4, 2],
+    );
     let b = Tensor::<f32>::new(vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6], &vec![3, 2]);
     let mut c = Tensor::<f32>::default(&vec![4, 3]);
 
     let op = CudaOperator::new();
-    op.matmul_transb(&mut c, 0., & a, & b, 1.);
+    op.matmul_transb(&mut c, 0., &a, &b, 1.);
     //println!("{:?}", c.data());
     assert!(c.close_to(
-        &Tensor::<f32>::new(vec![0.29999986, 0.6999997, 1.0999994, 0.29999986, 0.6999997, 1.0999994, 0.29999986, 0.6999997, 1.0999994, 0.29999986, 0.6999997, 1.0999994], &vec![4,3]),
+        &Tensor::<f32>::new(
+            vec![
+                0.29999986, 0.6999997, 1.0999994, 0.29999986, 0.6999997, 1.0999994, 0.29999986,
+                0.6999997, 1.0999994, 0.29999986, 0.6999997, 1.0999994
+            ],
+            &vec![4, 3]
+        ),
         1e-3
     ));
 }

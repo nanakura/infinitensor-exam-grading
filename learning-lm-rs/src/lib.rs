@@ -1,10 +1,10 @@
 pub mod chat;
 pub mod config;
 pub mod kvcache;
-pub mod model_cpu;
+pub mod model;
 #[cfg(feature = "cuda")]
 pub mod model_cuda;
-pub mod operators_cpu;
+pub mod operators;
 #[cfg(feature = "cuda")]
 pub mod operators_cuda;
 pub mod params;

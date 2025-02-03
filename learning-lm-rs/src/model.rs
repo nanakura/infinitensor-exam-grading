@@ -1,11 +1,10 @@
-use std::fmt::Debug;
 use std::fs::File;
 use std::iter::Sum;
 use std::vec;
 
 use crate::config::LlamaConfigJson;
 use crate::kvcache::KVCache;
-use crate::operators_cpu::{self as OP};
+use crate::operators::{self as OP};
 use crate::params::{FromBytes, LLamaParams};
 use crate::tensor::Tensor;
 use num_traits::Float;
