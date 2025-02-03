@@ -78,7 +78,8 @@ impl<T: Copy + Default + FromBytes + Float + Sum + OP::CudaDType> Llama<T> {
 
         // Computation Starts Here
         // Embedding lookup
-        OP::gather(&mut residual, input, &self.params.embedding_table);
+        self.operator
+            .gather(&mut residual, input, &self.params.embedding_table);
 
         for layer in 0..self.n_layers {
             self.operator.rms_norm(

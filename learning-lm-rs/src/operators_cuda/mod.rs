@@ -220,8 +220,8 @@ impl CudaOperator {
         let kname = kernel_name::<T>("rms_norm");
         let func = self.get_or_load_func(&kname, cuda_kernels::RMSNORM);
 
-        let block_dim = 256; // 使用1维块，每个块256线程
-        let grid_dim = m as u32; // 每个样本一个块
+        let block_dim = 256;
+        let grid_dim = m as u32;
 
         let shared_mem_bytes = block_dim * std::mem::size_of::<T>() as u32;
 
@@ -287,15 +287,12 @@ impl CudaOperator {
         let kname = kernel_name::<T>("rope");
         let f = self.get_or_load_func(&kname, cuda_kernels::ROPE);
 
-        // Convert tensor to f32 slice
         let data_host: &mut [T] = unsafe {
             std::slice::from_raw_parts_mut(y.data_mut().as_mut_ptr() as *mut T, y.data().len())
         };
 
-        // Copy data to device
         let mut data_dev = self.dev.htod_sync_copy(data_host).unwrap();
 
-        // Configure kernel launch parameters
         let block_dim = (8, 8, 8);
         let grid_dim = (
             (seq_len as u32 + block_dim.0 - 1) / block_dim.0,
@@ -309,7 +306,6 @@ impl CudaOperator {
             shared_mem_bytes: 0,
         };
 
-        // Launch kernel
         unsafe {
             f.launch(
                 cfg,
@@ -325,46 +321,64 @@ impl CudaOperator {
             .unwrap();
         }
 
-        // Copy result back to host
         self.dev.dtoh_sync_copy_into(&data_dev, data_host).unwrap();
     }
-}
 
-// get (row) vectors from a 2D table given a list of indices
-pub fn gather<T: Copy + Default>(y: &mut Tensor<T>, indices: &Tensor<u32>, table: &Tensor<T>) {
-    let length = indices.size();
-    let table_shape = table.shape();
-    assert!(table_shape.len() == 2);
-    let dim = table_shape[1];
-    assert!(y.size() == length * dim);
-    for i in 0..length {
-        let src = &table.data()[indices.data()[i] as usize * dim..][..dim];
-        let dst = &mut unsafe { y.data_mut() }[i * dim..][..dim];
-        dst.copy_from_slice(src);
-    }
-}
+    pub fn gather<T: Copy + Default + CudaDType>(
+        &self,
+        y: &mut Tensor<T>,
+        indices: &Tensor<u32>,
+        table: &Tensor<T>,
+    ) {
+        let length = indices.size();
+        let table_shape = table.shape();
+        assert!(table_shape.len() == 2);
+        let dim = table_shape[1];
+        assert!(y.size() == length * dim);
 
-// RoPE: Rotary Positional Embedding
-pub fn rope<T: Copy + Default + Float>(y: &mut Tensor<T>, start_pos: usize, theta: T) {
-    let shape = y.shape();
-    assert!(shape.len() == 3);
-    let seq_len = shape[0];
-    let n_heads = shape[1];
-    let d = shape[2];
-    let data = unsafe { y.data_mut() };
-    for tok in 0..seq_len {
-        let pos = start_pos + tok;
-        for head in 0..n_heads {
-            for i in 0..d / 2 {
-                let a = data[tok * n_heads * d + head * d + i];
-                let b = data[tok * n_heads * d + head * d + i + d / 2];
-                let freq = T::from(pos).unwrap()
-                    / theta.powf(T::from(i * 2).unwrap() / T::from(d).unwrap());
-                let (sin, cos) = freq.sin_cos();
-                data[tok * n_heads * d + head * d + i] = a * cos - b * sin;
-                data[tok * n_heads * d + head * d + i + d / 2] = b * cos + a * sin;
-            }
+        let kname = kernel_name::<T>("gather");
+        let f = self.get_or_load_func(&kname, cuda_kernels::GATHER);
+
+        let indices_host: &[u32] = indices.data();
+        let table_host = unsafe {
+            std::slice::from_raw_parts(table.data().as_ptr() as *const T, table.data().len())
+        };
+        let y_host = unsafe {
+            std::slice::from_raw_parts_mut(y.data_mut().as_mut_ptr() as *mut T, y.data().len())
+        };
+
+        let indices_dev = self.dev.htod_sync_copy(indices_host).unwrap();
+        let table_dev = self.dev.htod_sync_copy(table_host).unwrap();
+        let mut y_dev = self.dev.htod_sync_copy(y_host).unwrap();
+
+        let block_dim = (16, 16, 1);
+        let grid_dim = (
+            (length as u32 + block_dim.0 - 1) / block_dim.0,
+            (dim as u32 + block_dim.1 - 1) / block_dim.1,
+            1,
+        );
+
+        let cfg = LaunchConfig {
+            block_dim,
+            grid_dim,
+            shared_mem_bytes: 0,
+        };
+
+        unsafe {
+            f.launch(
+                cfg,
+                (
+                    &mut y_dev,
+                    &indices_dev,
+                    &table_dev,
+                    length as i32,
+                    dim as i32,
+                ),
+            )
+            .unwrap();
         }
+
+        self.dev.dtoh_sync_copy_into(&y_dev, y_host).unwrap();
     }
 }
 

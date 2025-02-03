@@ -17,7 +17,7 @@ path = "src/bin/story.rs"
 
 [features]
 web = ["dep:ntex", "dep:parking_lot"]
-cuda = ["dep:cudarc", "dep:bindgen_cuda", "dep:candle-kernels"]
+cuda = ["dep:cudarc", "dep:bindgen_cuda"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -31,7 +31,6 @@ bytemuck = "1.21.0"
 parking_lot = { version = "0.12.3", optional = true }
 ntex = { version = "2.11.0", features = ["compio"], optional = true }
 cudarc = { version = "0.13.4", features = ["std", "cublas", "cublaslt", "curand", "driver", "nvrtc", "f16", "cuda-version-from-build-system", "dynamic-linking"], default-features=false, optional = true }
-candle-kernels = { version = "0.5.1", optional = true }
 
 [build-dependencies]
 bindgen_cuda = { version = "0.1.5", optional = true }
