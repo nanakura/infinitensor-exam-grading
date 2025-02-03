@@ -381,7 +381,6 @@ impl CudaOperator {
         self.dev.dtoh_sync_copy_into(&y_dev, y_host).unwrap();
     }
 
-
     // softmax(x) = exp(x - max) / sum(exp(x - max))
     // y = softmax(mask(x))
     pub fn masked_softmax<T: Copy + Default + Float + Sum + CudaDType>(&self, y: &mut Tensor<T>) {
@@ -391,7 +390,7 @@ impl CudaOperator {
         let total_seq_len = y.shape()[ndim - 1];
         let batch = y.size() / (seq_len * total_seq_len);
         let kname = kernel_name::<T>("masked_softmax");
-        let f = self.get_or_load_func(&kname, cuda_kernels::SOFTMAX); 
+        let f = self.get_or_load_func(&kname, cuda_kernels::SOFTMAX);
 
         let data_host = unsafe {
             std::slice::from_raw_parts_mut(y.data_mut().as_mut_ptr() as *mut T, y.data().len())

@@ -2,51 +2,55 @@
 #include "cuda_bf16.h"
 #include<stdint.h>
 
-using bf16 =  __nv_bfloat16;
-using f16 = __half;
+template<typename T>
+__device__ T exp_wrapper(T x) {
+    return expf(x);
+}
 
-extern "C" __global__ void swiglu_f32(
-    float* y,
-    const float* x,
+template<>
+__device__ __half exp_wrapper(__half x) {
+    return hexp(x);
+}
+
+template<>
+__device__ __nv_bfloat16 exp_wrapper(__nv_bfloat16 x) {
+    return hexp(x);
+}
+
+template <typename T>
+__device__ void swiglu(
+    T* y,
+    const T* x,
     int num_elements
 ) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= num_elements) return;
 
-    const float x_val = x[i];
-    const float sigmoid = 1.0f / (1.0f + expf(-x_val));
-    const float silu = x_val * sigmoid;
+    const T x_val = x[i];
+    const T sigmoid = T(1.0f) / (T(1.0f) + exp_wrapper(-x_val));
+    const T silu = x_val * sigmoid;
     
     y[i] *= silu;
 }
 
 
+#define OPS(TYPENAME, RUST_NAME) \
+    extern "C" __global__ void swiglu_##RUST_NAME( \
+        TYPENAME* y, \
+        const TYPENAME* x, \
+        int num_elements \
+    ) { \
+        swiglu<TYPENAME>(y, x, num_elements); \
+    } \
 
-extern "C" __global__ void swiglu_f16(
-    f16* y,
-    const f16* x,
-    int num_elements
-) {
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= num_elements) return;
 
-    const f16 x_val = x[i];
-    const f16 sigmoid = 1.0f / (1.0f + expf(-x_val));
-    const f16 silu = x_val * sigmoid;
-    
-    y[i] *= silu;
-}
-extern "C" __global__ void swiglu_bf16(
-    bf16* y,
-    const bf16* x,
-    int num_elements
-) {
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= num_elements) return;
+#if __CUDA_ARCH__ >= 800
+OPS(__nv_bfloat16, bf16)
+#endif
 
-    const bf16 x_val = x[i];
-    const bf16 sigmoid = 1.0f / (1.0f + expf(-x_val));
-    const bf16 silu = x_val * sigmoid;
-    
-    y[i] *= silu;
-}
+#if __CUDA_ARCH__ >= 530
+OPS(__half, f16)
+#endif
+
+OPS(float, f32)
+OPS(double, f64)
