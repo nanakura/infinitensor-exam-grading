@@ -20,7 +20,7 @@ pub enum DType {
     F32,
 }
 
-pub trait OpDType: Sized + cudarc::driver::DeviceRepr {
+pub trait CudaDType: Sized + cudarc::driver::DeviceRepr {
     const DTYPE: DType;
     fn gemm(
         blas: &CudaBlas,
@@ -31,7 +31,7 @@ pub trait OpDType: Sized + cudarc::driver::DeviceRepr {
     );
 }
 
-impl OpDType for f32 {
+impl CudaDType for f32 {
     const DTYPE: DType = DType::F32;
     fn gemm(
         blas: &CudaBlas,
@@ -46,7 +46,7 @@ impl OpDType for f32 {
     }
 }
 
-impl OpDType for f16 {
+impl CudaDType for f16 {
     const DTYPE: DType = DType::F16;
     fn gemm(
         blas: &CudaBlas,
@@ -61,7 +61,7 @@ impl OpDType for f16 {
     }
 }
 
-impl OpDType for bf16 {
+impl CudaDType for bf16 {
     const DTYPE: DType = DType::BF16;
     fn gemm(
         blas: &CudaBlas,
@@ -82,7 +82,7 @@ pub struct CudaOperator {
     blas: Arc<CudaBlas>,
 }
 
-fn kernel_name<T: OpDType>(base_name: &str) -> String {
+fn kernel_name<T: CudaDType>(base_name: &str) -> String {
     let dtype_str = match T::DTYPE {
         DType::F16 => "f16",
         DType::BF16 => "bf16",
@@ -113,9 +113,32 @@ impl CudaOperator {
         // able to only build the error value if needed.
         func
     }
+    // pub fn cos<T: Copy + Default + Float + OpDType>(&self, y: &mut Tensor<T>) {
+    //     let kname = kernel_name::<T>("ucos");
+    //     let f = self.get_or_load_func(&kname, candle_kernels::UNARY);
+    //     let len = y.data().len();
+    //     let cfg = LaunchConfig::for_num_elems(len as u32);
+    //     let y_data = unsafe{y.data_mut()};
+    //     let mut y_dev = self.dev.htod_sync_copy(y_data).unwrap();
+    //     let params = (len, 1usize, 0usize, 0usize, &mut y_dev);
+    //     unsafe { f.launch(cfg, params).unwrap() };
+    //     self.dev.dtoh_sync_copy_into(&y_dev, y_data).unwrap();
+    // }
+
+    // pub fn sin<T: Copy + Default + Float + OpDType>(&self, y: &mut Tensor<T>) {
+    //     let kname = kernel_name::<T>("usin");
+    //     let f = self.get_or_load_func(&kname, candle_kernels::UNARY);
+    //     let len = y.data().len();
+    //     let cfg = LaunchConfig::for_num_elems(len as u32);
+    //     let y_data = unsafe{y.data_mut()};
+    //     let mut y_dev = self.dev.htod_sync_copy(y_data).unwrap();
+    //     let params = (len, 1usize, 0usize, 0usize, &mut y_dev);
+    //     unsafe { f.launch(cfg, params).unwrap() };
+    //     self.dev.dtoh_sync_copy_into(&y_dev, y_data).unwrap();
+    // }
 
     // C = beta * C + alpha * A @ B^T
-    pub fn matmul_transb<T: OpDType + Copy + Default>(
+    pub fn matmul_transb<T: CudaDType + Copy + Default>(
         &self,
         c: &mut Tensor<T>,
         beta: T,
@@ -172,7 +195,7 @@ impl CudaOperator {
         self.dev.synchronize().unwrap();
     }
 
-    pub fn rms_norm<T: OpDType + Copy + Default + Float>(
+    pub fn rms_norm<T: CudaDType + Copy + Default + Float>(
         &self,
         y: &mut Tensor<T>,
         x: &Tensor<T>,
@@ -216,7 +239,7 @@ impl CudaOperator {
 
     // y = silu(x) * y
     // hint: this is an element-wise operation
-    pub fn swiglu<T: Copy + Default + Float + Sum + OpDType>(
+    pub fn swiglu<T: Copy + Default + Float + Sum + CudaDType>(
         &self,
         y: &mut Tensor<T>,
         x: &Tensor<T>,
@@ -247,6 +270,63 @@ impl CudaOperator {
         }
 
         self.dev.dtoh_sync_copy_into(&y_dev, y_host).unwrap();
+    }
+
+    pub fn rope<T: Copy + Default + Float + CudaDType>(
+        &self,
+        y: &mut Tensor<T>,
+        start_pos: usize,
+        theta: T,
+    ) {
+        let shape = y.shape();
+        assert!(shape.len() == 3);
+        let seq_len = shape[0];
+        let n_heads = shape[1];
+        let d = shape[2];
+
+        let kname = kernel_name::<T>("rope");
+        let f = self.get_or_load_func(&kname, cuda_kernels::ROPE);
+
+        // Convert tensor to f32 slice
+        let data_host: &mut [T] = unsafe {
+            std::slice::from_raw_parts_mut(y.data_mut().as_mut_ptr() as *mut T, y.data().len())
+        };
+
+        // Copy data to device
+        let mut data_dev = self.dev.htod_sync_copy(data_host).unwrap();
+
+        // Configure kernel launch parameters
+        let block_dim = (8, 8, 8);
+        let grid_dim = (
+            (seq_len as u32 + block_dim.0 - 1) / block_dim.0,
+            (n_heads as u32 + block_dim.1 - 1) / block_dim.1,
+            (d as u32 / 2 + block_dim.2 - 1) / block_dim.2,
+        );
+
+        let cfg = LaunchConfig {
+            block_dim,
+            grid_dim,
+            shared_mem_bytes: 0,
+        };
+
+        // Launch kernel
+        unsafe {
+            f.launch(
+                cfg,
+                (
+                    &mut data_dev,
+                    start_pos as i32,
+                    theta.to_f32().unwrap(),
+                    seq_len as i32,
+                    n_heads as i32,
+                    d as i32,
+                ),
+            )
+            .unwrap();
+        }
+
+        // Copy result back to host
+        self.dev.dtoh_sync_copy_into(&data_dev, data_host).unwrap();
     }
 }
 
@@ -318,51 +398,6 @@ pub fn masked_softmax<T: Copy + Default + Float + Sum>(y: &mut Tensor<T>) {
             (0..boundary).for_each(|j| data[offset + j] = data[offset + j] / sum);
             (boundary..total_seq_len).for_each(|j| data[offset + j] = T::zero());
         }
-    }
-}
-
-pub fn rms_norm<T: Copy + Default + Float + Sum>(
-    y: &mut Tensor<T>,
-    x: &Tensor<T>,
-    w: &Tensor<T>,
-    epsilon: T,
-) {
-    let len = y.size();
-    assert!(len == x.size());
-    let shape = y.shape().clone();
-    let y_data = unsafe { y.data_mut() };
-    let x = x.data();
-    let w = w.data();
-    for i in 0..shape[0] {
-        let mut sum = T::zero();
-        for j in 0..shape[1] {
-            sum = sum + x[i * shape[1] + j] * x[i * shape[1] + j];
-        }
-        let rms = (sum / T::from(shape[1]).unwrap() + epsilon).sqrt();
-        for j in 0..shape[1] {
-            let idx = i * shape[1] + j;
-            y_data[idx] = w[j] * (x[idx] / rms);
-        }
-    }
-}
-
-// y = silu(x) * y
-// hint: this is an element-wise operation
-pub fn swiglu<T: Copy + Default + Float + Sum>(y: &mut Tensor<T>, x: &Tensor<T>) {
-    let len = y.size();
-    assert!(len == x.size());
-
-    let _y = unsafe { y.data_mut() };
-    let _x = x.data();
-
-    let _x = _x
-        .iter()
-        .map(|the_x| *the_x * (T::one() / (T::one() + (-*the_x).exp())))
-        .collect::<Vec<T>>();
-    let mut idx = 0;
-    for the_y in _y.iter_mut() {
-        *the_y = *the_y * _x[idx];
-        idx += 1;
     }
 }
 

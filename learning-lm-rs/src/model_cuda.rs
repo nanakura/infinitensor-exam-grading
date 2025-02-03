@@ -29,7 +29,7 @@ pub struct Llama<T> {
     pub operator: OP::CudaOperator,
 }
 
-impl<T: Copy + Default + FromBytes + Float + Sum + OP::OpDType> Llama<T> {
+impl<T: Copy + Default + FromBytes + Float + Sum + OP::CudaDType> Llama<T> {
     pub fn from_safetensors(model_dir: impl AsRef<Path>) -> Self {
         let config = File::open(model_dir.as_ref().join("config.json")).unwrap();
         let config: LlamaConfigJson = serde_json::from_reader(config).unwrap();
@@ -113,12 +113,12 @@ impl<T: Copy + Default + FromBytes + Float + Sum + OP::OpDType> Llama<T> {
                 T::one(),
             );
 
-            OP::rope(
+            self.operator.rope(
                 q.reshape(&vec![seq_len, self.n_q_h, self.dqkv]),
                 past_seq_len,
                 self.rope_theta,
             );
-            OP::rope(
+            self.operator.rope(
                 k.reshape(&vec![seq_len, self.n_kv_h, self.dqkv]),
                 past_seq_len,
                 self.rope_theta,
@@ -327,7 +327,7 @@ fn self_attention<T: Copy + Default + Float + Sum>(
     }
 }
 
-fn mlp<T: Copy + Default + Float + Sum + OP::OpDType>(
+fn mlp<T: Copy + Default + Float + Sum + OP::CudaDType>(
     op: &OP::CudaOperator,
     residual: &mut Tensor<T>,
     hidden_states: &mut Tensor<T>,
