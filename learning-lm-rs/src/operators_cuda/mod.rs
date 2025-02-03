@@ -213,6 +213,41 @@ impl CudaOperator {
 
         self.dev.dtoh_sync_copy_into(&y_dev, y_host).unwrap();
     }
+
+    // y = silu(x) * y
+    // hint: this is an element-wise operation
+    pub fn swiglu<T: Copy + Default + Float + Sum + OpDType>(
+        &self,
+        y: &mut Tensor<T>,
+        x: &Tensor<T>,
+    ) {
+        assert_eq!(y.size(), x.size());
+        let num_elements = y.size();
+        let kname = kernel_name::<T>("swiglu");
+        let f = self.get_or_load_func(&kname, cuda_kernels::SWIGLU);
+
+        let x_host: &[T] = x.data();
+        let y_host: &mut [T] = unsafe { y.data_mut() };
+
+        let x_dev = self.dev.htod_sync_copy(x_host).unwrap();
+        let mut y_dev = self.dev.htod_sync_copy(y_host).unwrap();
+
+        let block_dim = 256;
+        let grid_dim = (num_elements as u32 + block_dim - 1) / block_dim;
+
+        let cfg = LaunchConfig {
+            block_dim: (block_dim, 1, 1),
+            grid_dim: (grid_dim, 1, 1),
+            shared_mem_bytes: 0,
+        };
+
+        unsafe {
+            f.launch(cfg, (&mut y_dev, &x_dev, num_elements as i32))
+                .unwrap();
+        }
+
+        self.dev.dtoh_sync_copy_into(&y_dev, y_host).unwrap();
+    }
 }
 
 // get (row) vectors from a 2D table given a list of indices
@@ -421,7 +456,8 @@ pub fn random_sample<T: Copy + Default + Float>(
 fn test_silu() {
     let mut y = Tensor::<f32>::new(vec![2., 3., 4.], &vec![1, 3]);
     let x = Tensor::<f32>::new(vec![1., 2., 3.], &vec![1, 3]);
-    swiglu(&mut y, &x);
+    let operator = CudaOperator::new();
+    operator.swiglu(&mut y, &x);
     assert!(y.close_to(
         &Tensor::<f32>::new(vec![1.4621172, 5.2847824, 11.43089], &vec![1, 3]),
         1e-3

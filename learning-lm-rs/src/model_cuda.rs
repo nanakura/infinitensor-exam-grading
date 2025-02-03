@@ -342,7 +342,7 @@ fn mlp<T: Copy + Default + Float + Sum + OP::OpDType>(
     op.rms_norm(hidden_states, residual, rms_w, eps);
     op.matmul_transb(gate, T::zero(), hidden_states, w_gate, T::one());
     op.matmul_transb(up, T::zero(), hidden_states, w_up, T::one());
-    OP::swiglu(up, gate);
+    op.swiglu(up, gate);
     op.matmul_transb(residual, T::one(), up, w_down, T::one());
 }
 
