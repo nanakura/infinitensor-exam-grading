@@ -129,6 +129,7 @@ impl<T: Copy + Default + FromBytes + Float + Sum + OP::CudaDType> Llama<T> {
             let full_v = &mut cache.v_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
 
             self_attention(
+                &self.operator,
                 &mut hidden_states,
                 &mut att_scores,
                 q,
@@ -257,7 +258,8 @@ impl<T: Copy + Default + FromBytes + Float + Sum + OP::CudaDType> Llama<T> {
     }
 }
 
-fn self_attention<T: Copy + Default + Float + Sum>(
+fn self_attention<T: Copy + Default + Float + Sum + OP::CudaDType>(
+    op: &OP::CudaOperator,
     hidden_states: &mut Tensor<T>, // (seq, n_kv_h * n_groups * dqkv)
     att_scores: &mut Tensor<T>,    // (n_kv_h, n_groups, seq, total_seq)
     q: &Tensor<T>,                 // (seq, n_kv_h * n_groups * dqkv)
@@ -297,7 +299,7 @@ fn self_attention<T: Copy + Default + Float + Sum>(
         }
     }
 
-    OP::masked_softmax(att_scores);
+    op.masked_softmax(att_scores);
 
     let att_data = att_scores.data();
     let hidden_data = unsafe { hidden_states.data_mut() };

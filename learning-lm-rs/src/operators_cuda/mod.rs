@@ -380,6 +380,53 @@ impl CudaOperator {
 
         self.dev.dtoh_sync_copy_into(&y_dev, y_host).unwrap();
     }
+
+
+    // softmax(x) = exp(x - max) / sum(exp(x - max))
+    // y = softmax(mask(x))
+    pub fn masked_softmax<T: Copy + Default + Float + Sum + CudaDType>(&self, y: &mut Tensor<T>) {
+        let ndim = y.shape().len();
+        assert!(ndim >= 2);
+        let seq_len = y.shape()[ndim - 2];
+        let total_seq_len = y.shape()[ndim - 1];
+        let batch = y.size() / (seq_len * total_seq_len);
+        let kname = kernel_name::<T>("masked_softmax");
+        let f = self.get_or_load_func(&kname, cuda_kernels::SOFTMAX); 
+
+        let data_host = unsafe {
+            std::slice::from_raw_parts_mut(y.data_mut().as_mut_ptr() as *mut T, y.data().len())
+        };
+        let mut data_dev = self.dev.htod_sync_copy(data_host).unwrap();
+
+        // Configure kernel launch parameters
+        let block_dim = (1, 256, 1);
+        let grid_dim = (
+            batch as u32,
+            (seq_len as u32 + block_dim.1 - 1) / block_dim.1,
+            1,
+        );
+
+        let cfg = LaunchConfig {
+            block_dim,
+            grid_dim,
+            shared_mem_bytes: 0,
+        };
+
+        unsafe {
+            f.launch(
+                cfg,
+                (
+                    &mut data_dev,
+                    batch as i32,
+                    seq_len as i32,
+                    total_seq_len as i32,
+                ),
+            )
+            .unwrap();
+        }
+
+        self.dev.dtoh_sync_copy_into(&data_dev, data_host).unwrap();
+    }
 }
 
 // softmax(x) = exp(x - max) / sum(exp(x - max))
