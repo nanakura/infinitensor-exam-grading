@@ -79,6 +79,7 @@ impl CudaDType for bf16 {
 #[derive(Clone)]
 pub struct CudaOperator {
     dev: Arc<CudaDevice>,
+    #[allow(unused)]
     blas: Arc<CudaBlas>,
 }
 
@@ -426,53 +427,39 @@ impl CudaOperator {
 
         self.dev.dtoh_sync_copy_into(&data_dev, data_host).unwrap();
     }
-}
 
-// softmax(x) = exp(x - max) / sum(exp(x - max))
-// y = softmax(mask(x))
-pub fn masked_softmax<T: Copy + Default + Float + Sum>(y: &mut Tensor<T>) {
-    let ndim = y.shape().len();
-    assert!(ndim >= 2);
-    let seq_len = y.shape()[ndim - 2];
-    let total_seq_len = y.shape()[ndim - 1];
-    let batch = y.size() / (seq_len * total_seq_len);
-    let data = unsafe { y.data_mut() };
-    for b in 0..batch {
-        let base = b * seq_len * total_seq_len;
-        for i in 0..seq_len {
-            let offset = base + i * total_seq_len;
-            let boundary = total_seq_len - seq_len + i + 1;
+    // Dot product of two tensors (treated as vectors)
+    pub fn dot<T: Copy + Default + Float + CudaDType>(&self, x: &Tensor<T>, y: &Tensor<T>) -> T {
+        let len = x.size();
+        assert!(len == y.size());
+        let x_host = x.data();
+        let y_host = y.data();
+        let x_dev = self.dev.htod_sync_copy(x_host).unwrap();
+        let y_dev = self.dev.htod_sync_copy(y_host).unwrap();
+        let block_dim = 256;
+        let grid_dim = (len as u32 + block_dim - 1) / block_dim;
+        let shared_mem_bytes = block_dim * std::mem::size_of::<T>() as u32;
+        let mut result = [T::zero()];
+        let mut result_dev = self.dev.htod_sync_copy(&result).unwrap();
+        let kname = kernel_name::<T>("dot");
+        let f = self.get_or_load_func(&kname, cuda_kernels::DOT);
+        let cfg = LaunchConfig {
+            block_dim: (block_dim, 1, 1),
+            grid_dim: (grid_dim, 1, 1),
+            shared_mem_bytes,
+        };
 
-            let max = data[offset..offset + boundary]
-                .iter()
-                .fold(data[offset], |a, b| a.max(*b));
-
-            let sum = (0..boundary)
-                .map(|j| {
-                    let e = (data[offset + j] - max).exp();
-                    data[offset + j] = e;
-                    e
-                })
-                .sum::<T>();
-
-            (0..boundary).for_each(|j| data[offset + j] = data[offset + j] / sum);
-            (boundary..total_seq_len).for_each(|j| data[offset + j] = T::zero());
+        unsafe {
+            f.launch(cfg, (&x_dev, &y_dev, &mut result_dev, len as i32))
+                .unwrap();
         }
-    }
-}
 
-// Dot product of two tensors (treated as vectors)
-#[allow(unused)]
-pub fn dot<T: Copy + Default + Float>(x: &Tensor<T>, y: &Tensor<T>) -> T {
-    let len = x.size();
-    assert!(len == y.size());
-    let x_ = x.data();
-    let y_ = y.data();
-    let mut sum = T::zero();
-    for i in 0..len {
-        sum = sum + x_[i] * y_[i];
+        self.dev
+            .dtoh_sync_copy_into(&result_dev, &mut result)
+            .unwrap();
+
+        result[0]
     }
-    sum
 }
 
 // Sample a index from a tensor (treated as a probability vector)
