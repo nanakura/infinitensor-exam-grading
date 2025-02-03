@@ -81,7 +81,7 @@ impl<T: Copy + Default + FromBytes + Float + Sum + OP::OpDType> Llama<T> {
         OP::gather(&mut residual, input, &self.params.embedding_table);
 
         for layer in 0..self.n_layers {
-            OP::rms_norm(
+            self.operator.rms_norm(
                 &mut hidden_states,
                 &residual,
                 &self.params.rms_att_w[layer],
@@ -168,7 +168,7 @@ impl<T: Copy + Default + FromBytes + Float + Sum + OP::OpDType> Llama<T> {
         let mut hidden_states = hidden_states.slice((seq_len - 1) * self.d, &vec![1, self.d]);
         let residual = residual.slice((seq_len - 1) * self.d, &vec![self.d]);
 
-        OP::rms_norm(
+        self.operator.rms_norm(
             &mut hidden_states,
             &residual,
             &self.params.rms_out_w,
@@ -339,7 +339,7 @@ fn mlp<T: Copy + Default + Float + Sum + OP::OpDType>(
     rms_w: &Tensor<T>,
     eps: T,
 ) {
-    OP::rms_norm(hidden_states, residual, rms_w, eps);
+    op.rms_norm(hidden_states, residual, rms_w, eps);
     op.matmul_transb(gate, T::zero(), hidden_states, w_gate, T::one());
     op.matmul_transb(up, T::zero(), hidden_states, w_up, T::one());
     OP::swiglu(up, gate);

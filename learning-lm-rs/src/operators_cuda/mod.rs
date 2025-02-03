@@ -179,10 +179,13 @@ impl CudaOperator {
         w: &Tensor<T>,
         epsilon: T,
     ) {
-        let len = y.size();
-        assert!(len == x.size());
-        let m = x.shape()[1];  
-        let n = x.shape()[0];  
+        //assert_eq!(y.shape(), x.shape());
+        let x_shape = x.shape();
+        let (m, n) = match x_shape.len() {
+            1 => (1, x_shape[0]),          // 处理向量输入
+            2 => (x_shape[0], x_shape[1]), // 处理矩阵输入
+            _ => panic!("Unsupported tensor shape"),
+        };
 
         let x_host = x.data();
         let w_host = w.data();
@@ -191,26 +194,27 @@ impl CudaOperator {
         let w_dev = self.dev.htod_sync_copy(w_host).unwrap();
         let mut y_dev = self.dev.htod_sync_copy(y_host).unwrap();
 
-        let kname = kernel_name::<T>("rmsnorm");
-        let func = self.get_or_load_func(&kname, candle_kernels::REDUCE);
+        let kname = kernel_name::<T>("rms_norm");
+        let func = self.get_or_load_func(&kname, cuda_kernels::RMSNORM);
         
-        let block_size = 256; 
-        let block_dim = (block_size, 1, 1);
-        let grid_dim = (n as u32, 1, 1); // 每行一个block
-        
+        let block_dim = 256; // 使用1维块，每个块256线程
+        let grid_dim = m as u32; // 每个样本一个块
+
+        let shared_mem_bytes = block_dim * std::mem::size_of::<T>() as u32;
+
         let cfg = LaunchConfig {
-            block_dim,
-            grid_dim,
-            shared_mem_bytes: 0,
+            block_dim: (block_dim, 1, 1),
+            grid_dim: (grid_dim, 1, 1),
+            shared_mem_bytes,
         };
 
         let params = (
-            &x_dev, 
-            &mut y_dev, 
+            &mut y_dev,
+            &x_dev,
             &w_dev,
+            epsilon,
             m as i32,
-            block_size,
-            epsilon.to_f32().unwrap()
+            n as i32,
         );
         unsafe { func.launch(cfg, params).unwrap() };
 
