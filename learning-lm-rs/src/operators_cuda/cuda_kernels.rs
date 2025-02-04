@@ -5,3 +5,4 @@ pub const ROPE: &str = include_str!(concat!(env!("OUT_DIR"), "/rope.ptx"));
 pub const GATHER: &str = include_str!(concat!(env!("OUT_DIR"), "/gather.ptx"));
 pub const SOFTMAX: &str = include_str!(concat!(env!("OUT_DIR"), "/softmax.ptx"));
 pub const DOT: &str = include_str!(concat!(env!("OUT_DIR"), "/dot.ptx"));
+pub const SAMPLING: &str = include_str!(concat!(env!("OUT_DIR"), "/sampling.ptx"));

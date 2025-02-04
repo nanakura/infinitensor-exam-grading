@@ -192,9 +192,9 @@ impl<T: Copy + Default + FromBytes + Float + Sum + OP::CudaDType> Llama<T> {
         &self,
         token_ids: &[u32],
         max_len: usize,
-        top_p: T,
+        top_p: f32,
         top_k: u32,
-        temperature: T,
+        temperature: f32,
     ) -> Vec<u32> {
         let mut result = vec![self.bos_token_id];
         result.extend_from_slice(token_ids);
@@ -203,14 +203,18 @@ impl<T: Copy + Default + FromBytes + Float + Sum + OP::CudaDType> Llama<T> {
         let input_tensor = Tensor::new(result.clone(), &vec![result.len()]);
         let logits = self.forward(&input_tensor, &mut cache);
 
-        let mut next_token = OP::random_sample(&logits, top_p, top_k, temperature);
+        let mut next_token = self
+            .operator
+            .random_sample(&logits, top_p, top_k, temperature);
         result.push(next_token);
 
         while result.len() < max_len {
             let input_tensor = Tensor::new(vec![next_token], &vec![1]);
             let logits = self.forward(&input_tensor, &mut cache);
 
-            next_token = OP::random_sample(&logits, top_p, top_k, temperature);
+            next_token = self
+                .operator
+                .random_sample(&logits, top_p, top_k, temperature);
 
             if next_token == self.eos_token_id {
                 break;
@@ -228,9 +232,9 @@ impl<T: Copy + Default + FromBytes + Float + Sum + OP::CudaDType> Llama<T> {
         cache: &mut KVCache<T>,
         tokenizer: &Tokenizer,
         max_len: usize,
-        top_p: T,
+        top_p: f32,
         top_k: u32,
-        temperature: T,
+        temperature: f32,
     ) -> String {
         let encoding = tokenizer.encode(promps, false).unwrap();
         let token_ids = encoding.get_ids();
@@ -238,14 +242,18 @@ impl<T: Copy + Default + FromBytes + Float + Sum + OP::CudaDType> Llama<T> {
         let input_tensor = Tensor::new(token_ids.to_vec(), &vec![token_ids.len()]);
         let logits = self.forward(&input_tensor, cache);
 
-        let mut next_token = OP::random_sample(&logits, top_p, top_k, temperature);
+        let mut next_token = self
+            .operator
+            .random_sample(&logits, top_p, top_k, temperature);
         let mut result = vec![next_token];
 
         while result.len() < max_len {
             let input_tensor = Tensor::new(vec![next_token], &vec![1]);
             let logits = self.forward(&input_tensor, cache);
 
-            next_token = OP::random_sample(&logits, top_p, top_k, temperature);
+            next_token = self
+                .operator
+                .random_sample(&logits, top_p, top_k, temperature);
 
             if next_token == self.eos_token_id {
                 break;

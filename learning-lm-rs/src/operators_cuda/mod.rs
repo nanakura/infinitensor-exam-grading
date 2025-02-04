@@ -460,77 +460,57 @@ impl CudaOperator {
 
         result[0]
     }
-}
 
-// Sample a index from a tensor (treated as a probability vector)
-pub fn random_sample<T: Copy + Default + Float>(
-    x: &Tensor<T>,
-    top_p: T,
-    top_k: u32,
-    temperature: T,
-) -> u32 {
-    assert!(x.shape()[x.shape().len() - 1] == x.size());
-    if temperature <= T::zero() || top_k < 2 || top_p <= T::zero() {
-        return x
-            .data()
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-            .unwrap()
-            .0 as _;
-    }
+    // Sample a index from a tensor (treated as a probability vector)
+    pub fn random_sample<T: Copy + Default + Float + CudaDType>(
+        &self,
+        x: &Tensor<T>,
+        top_p: f32,
+        top_k: u32,
+        temperature: f32,
+    ) -> u32 {
+        assert!(x.shape()[x.shape().len() - 1] == x.size());
+        let size = x.size();
+        assert!(size <= 4096, "Vocabulary size must not exceed 4096");
 
-    #[derive(Clone, Copy, PartialEq, Debug)]
-    struct Probability {
-        val: f32,
-        tok: u32,
-    }
-    impl Eq for Probability {}
-    impl PartialOrd for Probability {
-        #[inline]
-        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-            Some(self.cmp(other))
-        }
-    }
-    impl Ord for Probability {
-        #[inline]
-        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-            match self.val.total_cmp(&other.val) {
-                std::cmp::Ordering::Equal => self.tok.cmp(&other.tok),
-                ord => ord.reverse(),
-            }
-        }
-    }
-    impl<T: Float> From<(usize, &T)> for Probability {
-        #[inline]
-        fn from((i, p): (usize, &T)) -> Self {
-            Self {
-                val: p.to_f32().unwrap(),
-                tok: i as _,
-            }
-        }
-    }
+        let x_host: &[T] = x.data();
+        let mut x_dev = self.dev.htod_sync_copy(x_host).unwrap();
 
-    // sort
-    let mut logits = x
-        .data()
-        .iter()
-        .enumerate()
-        .map(Probability::from)
-        .collect::<Vec<_>>();
-    logits.sort_unstable();
-    let max = core::mem::replace(&mut logits[0].val, 1.);
-    // softmax & sum
-    for i in 1..logits.len() {
-        logits[i].val =
-            logits[i - 1].val + ((logits[i].val - max) / temperature.to_f32().unwrap()).exp();
+        let mut result_dev = self.dev.htod_sync_copy(&[0u32]).unwrap();
+
+        let block_size = 256;
+        let cfg = LaunchConfig {
+            block_dim: (block_size, 1, 1),
+            grid_dim: (1, 1, 1),
+            shared_mem_bytes: (4096 + 256) * std::mem::size_of::<T>() as u32, // probs + temp_max
+        };
+
+        let kname = kernel_name::<T>("random_sample");
+        let f = self.get_or_load_func(&kname, cuda_kernels::SAMPLING);
+
+        unsafe {
+            f.launch(
+                cfg,
+                (
+                    &mut x_dev,
+                    &mut result_dev,
+                    top_p,
+                    top_k,
+                    temperature,
+                    rand::random::<u32>(),
+                    size as i32,
+                ),
+            )
+            .unwrap();
+        }
+
+        let mut result_host = [0u32];
+        self.dev
+            .dtoh_sync_copy_into(&result_dev, &mut result_host)
+            .unwrap();
+
+        result_host[0]
     }
-    // topk & topp & random
-    let pk = logits[(top_k as usize).min(logits.len()) - 1].val;
-    let pp = logits[logits.len() - 1].val * top_p.to_f32().unwrap();
-    let plimit = rand::random::<f32>() * f32::min(pk, pp);
-    // sample
-    logits.iter().find(|p| p.val >= plimit).unwrap().tok
 }
 
 // Your implementation should at least pass the following tests:
