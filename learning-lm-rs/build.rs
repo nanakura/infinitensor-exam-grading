@@ -5,6 +5,8 @@ fn main() {
         let builder = bindgen_cuda::Builder::default().kernel_paths_glob("cuda-kernels/**/*.cu");
         println!("cargo:info={builder:?}");
         let bindings = builder.build_ptx().unwrap();
-        bindings.write("src/cuda_kernels.rs").unwrap();
+        bindings
+            .write("src/operators_cuda/cuda_kernels.rs")
+            .unwrap();
     }
 }

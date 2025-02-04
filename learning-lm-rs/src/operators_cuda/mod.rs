@@ -150,7 +150,7 @@ impl CudaOperator {
         let (m, n) = (a.shape()[0], a.shape()[1]);
         let p = b.shape()[0];
         let kname = kernel_name::<T>("matmul_transb");
-        let f = self.get_or_load_func(&kname, cuda_kernels::MATMUL_TRANSB);
+        let f = self.get_or_load_func(&kname, cuda_kernels::MATMUL);
 
         // Convert tensors to f32 slices
         let a_host: &[T] =
@@ -219,7 +219,7 @@ impl CudaOperator {
         let mut y_dev = self.dev.htod_sync_copy(y_host).unwrap();
 
         let kname = kernel_name::<T>("rms_norm");
-        let func = self.get_or_load_func(&kname, cuda_kernels::RMSNORM);
+        let func = self.get_or_load_func(&kname, cuda_kernels::RMS_NORM);
 
         let block_dim = 256;
         let grid_dim = m as u32;
@@ -471,18 +471,21 @@ impl CudaOperator {
     ) -> u32 {
         assert!(x.shape()[x.shape().len() - 1] == x.size());
         let size = x.size();
-        assert!(size <= 4096, "Vocabulary size must not exceed 4096");
 
         let x_host: &[T] = x.data();
         let mut x_dev = self.dev.htod_sync_copy(x_host).unwrap();
 
+        // 分配临时存储空间
+        let probs_host = vec![T::zero(); size];
+        let mut probs_dev = self.dev.htod_sync_copy(&probs_host).unwrap();
+        let mut indices_dev = self.dev.alloc_zeros::<u32>(size).unwrap();
         let mut result_dev = self.dev.htod_sync_copy(&[0u32]).unwrap();
 
         let block_size = 256;
         let cfg = LaunchConfig {
             block_dim: (block_size, 1, 1),
             grid_dim: (1, 1, 1),
-            shared_mem_bytes: (4096 + 256) * std::mem::size_of::<T>() as u32, // probs + temp_max
+            shared_mem_bytes: block_size * std::mem::size_of::<T>() as u32, // 只用于存储temp_max
         };
 
         let kname = kernel_name::<T>("random_sample");
@@ -493,6 +496,8 @@ impl CudaOperator {
                 cfg,
                 (
                     &mut x_dev,
+                    &mut probs_dev,
+                    &mut indices_dev,
                     &mut result_dev,
                     top_p,
                     top_k,
@@ -510,6 +515,100 @@ impl CudaOperator {
             .unwrap();
 
         result_host[0]
+    }
+
+    pub fn self_attention<T: Copy + Default + Float + Sum + CudaDType>(
+        &self,
+        hidden_states: &mut Tensor<T>, // (seq, n_kv_h * n_groups * dqkv)
+        att_scores: &mut Tensor<T>,    // (n_kv_h, n_groups, seq, total_seq)
+        q: &Tensor<T>,                 // (seq, n_kv_h * n_groups * dqkv)
+        k: &Tensor<T>,                 // (total_seq, n_kv_h * dqkv)
+        v: &Tensor<T>,                 // (total_seq, n_kv_h * dqkv)
+        n_kv_h: usize,
+        n_groups: usize,
+        seq_len: usize,
+        total_seq_len: usize,
+        dqkv: usize,
+    ) {
+        let scale = T::from(dqkv as f32).unwrap().sqrt().recip();
+
+        let q_host = q.data();
+        let k_host = k.data();
+        let v_host = v.data();
+        let q_dev = self.dev.htod_sync_copy(q_host).unwrap();
+        let k_dev = self.dev.htod_sync_copy(k_host).unwrap();
+        let v_dev = self.dev.htod_sync_copy(v_host).unwrap();
+        let mut scores_dev = self
+            .dev
+            .htod_sync_copy(unsafe { att_scores.data_mut() })
+            .unwrap();
+        let mut hidden_dev = self
+            .dev
+            .htod_sync_copy(unsafe { hidden_states.data_mut() })
+            .unwrap();
+
+        let scores_cfg = LaunchConfig {
+            block_dim: (total_seq_len as u32, 1, 1),
+            grid_dim: (n_kv_h as u32, n_groups as u32, seq_len as u32),
+            shared_mem_bytes: 0,
+        };
+
+        let scores_kname = kernel_name::<T>("attention_scores");
+        let scores_f = self.get_or_load_func(&scores_kname, cuda_kernels::ATTN);
+        unsafe {
+            scores_f
+                .launch(
+                    scores_cfg,
+                    (
+                        &mut scores_dev,
+                        &q_dev,
+                        &k_dev,
+                        scale,
+                        seq_len as i32,
+                        total_seq_len as i32,
+                        n_kv_h as i32,
+                        n_groups as i32,
+                        dqkv as i32,
+                    ),
+                )
+                .unwrap();
+        }
+
+        self.dev
+            .dtoh_sync_copy_into(&scores_dev, unsafe { att_scores.data_mut() })
+            .unwrap();
+        self.masked_softmax(att_scores);
+        scores_dev = self.dev.htod_sync_copy(att_scores.data()).unwrap();
+
+        let output_cfg = LaunchConfig {
+            block_dim: (dqkv as u32, 1, 1),
+            grid_dim: (n_kv_h as u32, n_groups as u32, seq_len as u32),
+            shared_mem_bytes: 0,
+        };
+
+        let output_kname = kernel_name::<T>("attention_output");
+        let output_f = self.get_or_load_func(&output_kname, cuda_kernels::ATTN);
+        unsafe {
+            output_f
+                .launch(
+                    output_cfg,
+                    (
+                        &mut hidden_dev,
+                        &scores_dev,
+                        &v_dev,
+                        seq_len as i32,
+                        total_seq_len as i32,
+                        n_kv_h as i32,
+                        n_groups as i32,
+                        dqkv as i32,
+                    ),
+                )
+                .unwrap();
+        }
+
+        self.dev
+            .dtoh_sync_copy_into(&hidden_dev, unsafe { hidden_states.data_mut() })
+            .unwrap();
     }
 }
 

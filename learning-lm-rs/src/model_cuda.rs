@@ -128,8 +128,7 @@ impl<T: Copy + Default + FromBytes + Float + Sum + OP::CudaDType> Llama<T> {
             let full_k = &mut cache.k_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
             let full_v = &mut cache.v_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
 
-            self_attention(
-                &self.operator,
+            self.operator.self_attention(
                 &mut hidden_states,
                 &mut att_scores,
                 q,
@@ -263,78 +262,6 @@ impl<T: Copy + Default + FromBytes + Float + Sum + OP::CudaDType> Llama<T> {
         }
 
         tokenizer.decode(&result, true).unwrap()
-    }
-}
-
-fn self_attention<T: Copy + Default + Float + Sum + OP::CudaDType>(
-    op: &OP::CudaOperator,
-    hidden_states: &mut Tensor<T>, // (seq, n_kv_h * n_groups * dqkv)
-    att_scores: &mut Tensor<T>,    // (n_kv_h, n_groups, seq, total_seq)
-    q: &Tensor<T>,                 // (seq, n_kv_h * n_groups * dqkv)
-    k: &Tensor<T>,                 // (total_seq, n_kv_h * dqkv)
-    v: &Tensor<T>,                 // (total_seq, n_kv_h * dqkv)
-    n_kv_h: usize,
-    n_groups: usize,
-    seq_len: usize,
-    total_seq_len: usize,
-    dqkv: usize,
-) {
-    let scale = T::from(dqkv as f32).unwrap().sqrt();
-    let q_data = q.data();
-    let k_data = k.data();
-    let v_data = v.data();
-    let att_data = unsafe { att_scores.data_mut() };
-
-    for kv_head in 0..n_kv_h {
-        for group in 0..n_groups {
-            for q_seq in 0..seq_len {
-                for k_seq in 0..total_seq_len {
-                    let mut dot_product = T::zero();
-                    for d in 0..dqkv {
-                        let q_idx = q_seq * (n_kv_h * n_groups * dqkv)
-                            + (kv_head * n_groups + group) * dqkv
-                            + d;
-                        let k_idx = k_seq * (n_kv_h * dqkv) + kv_head * dqkv + d;
-                        dot_product = dot_product + q_data[q_idx] * k_data[k_idx];
-                    }
-                    let score_idx = kv_head * (n_groups * seq_len * total_seq_len)
-                        + group * (seq_len * total_seq_len)
-                        + q_seq * total_seq_len
-                        + k_seq;
-                    att_data[score_idx] = dot_product / scale;
-                }
-            }
-        }
-    }
-
-    op.masked_softmax(att_scores);
-
-    let att_data = att_scores.data();
-    let hidden_data = unsafe { hidden_states.data_mut() };
-    for i in 0..hidden_data.len() {
-        hidden_data[i] = T::zero();
-    }
-
-    for kv_head in 0..n_kv_h {
-        for group in 0..n_groups {
-            for q_seq in 0..seq_len {
-                for d in 0..dqkv {
-                    let mut sum = T::zero();
-                    for k_seq in 0..total_seq_len {
-                        let score_idx = kv_head * (n_groups * seq_len * total_seq_len)
-                            + group * (seq_len * total_seq_len)
-                            + q_seq * total_seq_len
-                            + k_seq;
-                        let v_idx = k_seq * (n_kv_h * dqkv) + kv_head * dqkv + d;
-                        sum = sum + att_data[score_idx] * v_data[v_idx];
-                    }
-                    let out_idx = q_seq * (n_kv_h * n_groups * dqkv)
-                        + (kv_head * n_groups + group) * dqkv
-                        + d;
-                    hidden_data[out_idx] = sum;
-                }
-            }
-        }
     }
 }
 
