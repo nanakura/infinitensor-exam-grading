@@ -6,7 +6,7 @@ use crate::config::LlamaConfigJson;
 use crate::kvcache::KVCache;
 use crate::operators::{self as OP};
 use crate::params::{FromBytes, LLamaParams};
-use crate::tensor::Tensor;
+use crate::tensor::{PrecisionCast, Tensor};
 use num_traits::Float;
 use safetensors::SafeTensors;
 use std::path::Path;
@@ -28,7 +28,7 @@ pub struct Llama<T> {
     eos_token_id: u32,      // end token id
 }
 
-impl<T: Copy + Default + FromBytes + Float + Sum> Llama<T> {
+impl<T: Copy + Default + FromBytes + Float + Sum + PrecisionCast> Llama<T> {
     pub fn from_safetensors(model_dir: impl AsRef<Path>) -> Self {
         let config = File::open(model_dir.as_ref().join("config.json")).unwrap();
         let config: LlamaConfigJson = serde_json::from_reader(config).unwrap();

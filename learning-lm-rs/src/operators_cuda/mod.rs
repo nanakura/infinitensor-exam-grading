@@ -9,16 +9,9 @@ use half::{bf16, f16};
 use num_traits::Float;
 use std::sync::Arc;
 
-use crate::tensor::Tensor;
+use crate::tensor::{DType, Tensor};
 
 mod cuda_kernels;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DType {
-    F16,
-    BF16,
-    F32,
-}
 
 pub trait CudaDType: Sized + cudarc::driver::DeviceRepr {
     const DTYPE: DType;

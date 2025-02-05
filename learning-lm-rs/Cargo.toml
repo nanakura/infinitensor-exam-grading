@@ -25,7 +25,7 @@ serde_json = "1.0"
 safetensors = "0.4.3"
 tokenizers = "0.19.1"
 rand = "0.8"
-half = "2.4.1"
+half = {version = "2.4.1", features = ["num-traits"]}
 num-traits = "0.2.19"
 bytemuck = "1.21.0"
 parking_lot = { version = "0.12.3", optional = true }
