@@ -54,19 +54,48 @@
     <script>
         const sessionId = Math.random().toString(36).substring(7);
         let isInitialized = false;
+        let events;
+        let currentAssistantMessage = null;
+        let isProcessing = false;
+        let messageQueue = [];
 
         async function initChat() {
-            const response = await fetch('/api/init', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    session_id: sessionId,
-                    message: ''
-                })
+            console.log(sessionId);
+            events = new EventSource(`/api/init/${sessionId}`);
+            
+            events.addEventListener('message', (event) => {
+                const data = event.data;
+                if (data === '[DONE]') {
+                    currentAssistantMessage = null;
+                    return;
+                }
+                
+                if (!currentAssistantMessage) return;
+                
+                messageQueue.push(...data.split(''));
+                if (!isProcessing) {
+                    processMessageQueue();
+                }
             });
+
             isInitialized = true;
+        }
+
+        function processMessageQueue() {
+            if (messageQueue.length === 0 || !currentAssistantMessage) {
+                isProcessing = false;
+                return;
+            }
+
+            isProcessing = true;
+            const char = messageQueue.shift();
+            currentAssistantMessage.textContent += char;
+            
+            // 自动滚动到底部
+            const chatBox = document.getElementById('chat-box');
+            chatBox.scrollTop = chatBox.scrollHeight;
+
+            setTimeout(processMessageQueue, 30);
         }
 
         async function sendMessage() {
@@ -75,15 +104,20 @@
             }
 
             const input = document.getElementById('message-input');
-            const message = input.value;
+            const message = input.value.trim();
             if (!message) return;
 
             // 显示用户消息
             addMessage('user', message);
             input.value = '';
 
+            // 创建新的助手消息容器
+            currentAssistantMessage = addMessage('assistant', '');
+            messageQueue = [];
+            isProcessing = false;
+
             // 发送到服务器
-            const response = await fetch('/api/chat', {
+            await fetch('/api/chat', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -93,11 +127,6 @@
                     message: message
                 })
             });
-
-            const data = await response.json();
-            
-            // 显示助手回复
-            addMessage('assistant', data.message);
         }
 
         function addMessage(role, content) {
@@ -107,16 +136,15 @@
             messageDiv.textContent = content;
             chatBox.appendChild(messageDiv);
             chatBox.scrollTop = chatBox.scrollHeight;
+            return messageDiv;
         }
 
-        // 支持回车发送
         document.getElementById('message-input').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
                 sendMessage();
             }
         });
 
-        // 初始化聊天
         initChat();
     </script>
 </body>

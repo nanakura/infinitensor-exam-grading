@@ -40,6 +40,7 @@ struct ChatResponse {
 }
 
 async fn init_chat(
+    session_id: web::types::Path<String>,
     data: web::types::State<AppState>,
     req: web::types::Json<ChatRequest>,
 ) -> HttpResponse {
@@ -51,7 +52,7 @@ async fn init_chat(
         let cache = manager.model.new_cache();
         manager
             .sessions
-            .insert(req.session_id.clone(), (session, cache));
+            .insert(session_id.into_inner(), (session, cache));
     }
 
     let rx = data.broadcaster.lock().new_client();
@@ -126,7 +127,7 @@ async fn main() -> std::io::Result<()> {
                 broadcaster: broadcaster.clone(),
             })
             .service(web::resource("/").to(index))
-            .service(web::resource("/api/init").to(init_chat))
+            .service(web::resource("/api/init/{session_id}").to(init_chat))
             .service(web::resource("/api/chat").to(send_message))
     })
     .bind(("127.0.0.1", 8080))?
