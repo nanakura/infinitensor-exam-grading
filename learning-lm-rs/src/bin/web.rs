@@ -1,3 +1,4 @@
+use futures::{pin_mut, StreamExt};
 use learning_lm_rust::chat;
 use learning_lm_rust::chat::ChatSession;
 use learning_lm_rust::kvcache::KVCache;
@@ -5,6 +6,7 @@ use learning_lm_rust::kvcache::KVCache;
 use learning_lm_rust::model::{self as model};
 #[cfg(feature = "cuda")]
 use learning_lm_rust::model_cuda::{self as model};
+use learning_lm_rust::sse::Broadcaster;
 use model::Llama;
 use ntex::web::{self, HttpResponse};
 use parking_lot::Mutex;
@@ -23,6 +25,7 @@ struct ChatManager {
 
 struct AppState {
     chat_manager: Arc<Mutex<ChatManager>>,
+    broadcaster: Arc<Mutex<Broadcaster>>,
 }
 
 #[derive(Deserialize)]
@@ -51,9 +54,12 @@ async fn init_chat(
             .insert(req.session_id.clone(), (session, cache));
     }
 
-    HttpResponse::Ok().json(&ChatResponse {
-        message: "Chat session initialized".to_string(),
-    })
+    let rx = data.broadcaster.lock().new_client();
+
+    HttpResponse::Ok()
+        .header("content-type", "text/event-stream")
+        .no_chunking()
+        .streaming(rx)
 }
 
 async fn send_message(
@@ -67,13 +73,22 @@ async fn send_message(
 
         let prompt = session.format_prompt();
         let manager = data.chat_manager.lock();
-        let response = manager
-            .model
-            .chat(&prompt, cache, &manager.tokenizer, 500, 0.8, 30, 1.);
+        let token_stream =
+            manager
+                .model
+                .chat_stream(&prompt, cache, &manager.tokenizer, 500, 0.8, 30, 1.);
+        pin_mut!(token_stream);
+        while let Some(token) = token_stream.next().await {
+            let response = token.to_string();
+            session.add_message("assistant", &response);
+            data.broadcaster.lock().send(&response);
 
-        session.add_message("assistant", &response);
+            session.add_message("assistant", &response);
+        }
 
-        HttpResponse::Ok().json(&ChatResponse { message: response })
+        HttpResponse::Ok().json(&ChatResponse {
+            message: "msg sent".to_string(),
+        })
     } else {
         HttpResponse::BadRequest().json(&ChatResponse {
             message: "Session not found".to_string(),
@@ -100,12 +115,15 @@ async fn main() -> std::io::Result<()> {
         sessions: HashMap::new(),
     };
 
+    let broadcaster = Broadcaster::create();
+
     println!("Starting server at http://127.0.0.1:8080");
 
     web::HttpServer::new(move || {
         web::App::new()
             .state(AppState {
                 chat_manager: Arc::new(Mutex::new(chat_manager.clone())),
+                broadcaster: broadcaster.clone(),
             })
             .service(web::resource("/").to(index))
             .service(web::resource("/api/init").to(init_chat))

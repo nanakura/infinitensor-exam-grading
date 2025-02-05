@@ -263,6 +263,50 @@ impl<T: Copy + Default + FromBytes + Float + Sum + OP::CudaDType> Llama<T> {
 
         tokenizer.decode(&result, true).unwrap()
     }
+
+    #[cfg(feature = "web")]
+    pub fn chat_stream<'a>(
+        &'a self,
+        promps: &str,
+        cache: &'a mut KVCache<T>,
+        tokenizer: &'a Tokenizer,
+        max_len: usize,
+        top_p: T,
+        top_k: u32,
+        temperature: T,
+    ) -> impl Stream<Item = String> + 'a {
+        use async_stream::stream;
+
+        let encoding = tokenizer.encode(promps, false).unwrap();
+        let token_ids = encoding.get_ids();
+
+        let input_tensor = Tensor::new(token_ids.to_vec(), &vec![token_ids.len()]);
+        let logits = self.forward(&input_tensor, cache);
+
+        let mut next_token = self
+            .operator
+            .random_sample(&logits, top_p, top_k, temperature);
+        let mut cnt = 1;
+        stream! {
+            let msg = tokenizer.decode(&vec![next_token], true).unwrap();
+
+            yield msg;
+
+            while cnt < max_len {
+                let input_tensor = Tensor::new(vec![next_token], &vec![1]);
+                let logits = self.forward(&input_tensor, cache);
+
+                next_token = self.operator.random_sample(&logits, top_p, top_k, temperature);
+
+                if next_token == self.eos_token_id {
+                    break;
+                }
+
+                yield tokenizer.decode(&vec![next_token], true).unwrap();
+                cnt+=1;
+            }
+        }
+    }
 }
 
 fn mlp<T: Copy + Default + Float + Sum + OP::CudaDType>(

@@ -8,4 +8,6 @@ pub mod operators;
 #[cfg(feature = "cuda")]
 pub mod operators_cuda;
 pub mod params;
+#[cfg(feature = "web")]
+pub mod sse;
 pub mod tensor;
