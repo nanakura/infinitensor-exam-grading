@@ -62,7 +62,7 @@ impl Broadcaster {
     pub fn new_client(&mut self) -> Client {
         let (tx, rx) = channel(100);
 
-        tx.try_send(Bytes::from("data: connected\n\n")).unwrap();
+        //tx.try_send(Bytes::from("data: connected\n\n")).unwrap();
 
         self.clients.push(tx);
         Client(rx)
