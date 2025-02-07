@@ -7,7 +7,7 @@ import axios from 'axios'
 const request = axios.create({
   baseURL: 'http://127.0.0.1:8080/',
   timeout: 36000,
-  headers: {'Content-Type': 'application/json'}
+  headers: { 'Content-Type': 'application/json' }
 })
 
 function App() {
@@ -66,10 +66,8 @@ function App() {
               },
             });
             request.post('/api/chat', {
-              body: {
-                session_id: '1111',
-                message: message
-              }
+              session_id: '1111',
+              message: message
             });
             return new Response(stream);
           }}
