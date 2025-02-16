@@ -17,7 +17,7 @@ path = "src/bin/story.rs"
 
 [features]
 web = ["dep:ntex", "dep:parking_lot", "dep:async-stream", "dep:futures-util", "dep:tokio", "dep:futures", "dep:env_logger", "dep:ntex-cors"]
-cuda = ["dep:cudarc", "dep:bindgen_cuda"]
+cuda = ["dep:cudarc", "dep:bindgen_cuda", "dep:candle-core"]
 flash_attn = ["dep:candle-core", "dep:candle-flash-attn"]
 
 [dependencies]

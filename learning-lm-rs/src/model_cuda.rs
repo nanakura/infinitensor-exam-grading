@@ -31,7 +31,9 @@ pub struct Llama<T> {
     device: candle_core::Device,
 }
 
-impl<T: Copy + Default + FromBytes + Float + Sum + OP::CudaDType> Llama<T> {
+impl<T: Copy + Default + FromBytes + Float + Sum + OP::CudaDType + candle_core::WithDType>
+    Llama<T>
+{
     pub fn from_safetensors(model_dir: impl AsRef<Path>) -> Self {
         let config = File::open(model_dir.as_ref().join("config.json")).unwrap();
         let config: LlamaConfigJson = serde_json::from_reader(config).unwrap();
@@ -332,13 +334,13 @@ impl<T: Copy + Default + FromBytes + Float + Sum + OP::CudaDType> Llama<T> {
 
 // 仅支持cuda + f16/bf16
 #[cfg(feature = "flash_attn")]
-fn self_attention(
+fn self_attention<T: Copy + Default + Float + candle_core::WithDType>(
     device: &candle_core::Device,
-    hidden_states: &mut Tensor<f32>, // (seq, n_kv_h * n_groups * dqkv)
-    att_scores: &mut Tensor<f32>,    // (n_kv_h, n_groups, seq, total_seq)
-    q: &Tensor<f32>,                 // (seq, n_kv_h * n_groups * dqkv)
-    k: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
-    v: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
+    hidden_states: &mut Tensor<T>, // (seq, n_kv_h * n_groups * dqkv)
+    _att_scores: &mut Tensor<T>,   // (n_kv_h, n_groups, seq, total_seq)
+    q: &Tensor<T>,                 // (seq, n_kv_h * n_groups * dqkv)
+    k: &Tensor<T>,                 // (total_seq, n_kv_h * dqkv)
+    v: &Tensor<T>,                 // (total_seq, n_kv_h * dqkv)
     n_kv_h: usize,
     n_groups: usize,
     seq_len: usize,
