@@ -51,9 +51,7 @@ async fn init_chat(
         let mut session = chat::ChatSession::new();
         session.add_message("system", "You are a helpful assistant");
         let cache = manager.model.new_cache();
-        manager
-            .sessions
-            .insert(session_id_inner, (session, cache));
+        manager.sessions.insert(session_id_inner, (session, cache));
     }
 
     let rx = data.broadcaster.lock().new_client();

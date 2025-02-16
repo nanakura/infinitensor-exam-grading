@@ -27,6 +27,8 @@ pub struct Llama<T> {
     bos_token_id: u32,      // start token id
     eos_token_id: u32,      // end token id
     pub operator: OP::CudaOperator,
+    #[cfg(feature = "flash_attn")]
+    device: candle_core::Device,
 }
 
 impl<T: Copy + Default + FromBytes + Float + Sum + OP::CudaDType> Llama<T> {
@@ -36,6 +38,8 @@ impl<T: Copy + Default + FromBytes + Float + Sum + OP::CudaDType> Llama<T> {
         let model_file = std::fs::read(model_dir.as_ref().join("model.safetensors")).unwrap();
         let safetensor = SafeTensors::deserialize(&model_file).unwrap();
         let params = LLamaParams::from_safetensors(&safetensor, &config);
+        #[cfg(feature = "flash_attn")]
+        let device = candle_core::Device::new_cuda(0).unwrap();
 
         Self {
             vocab: config.vocab_size,
@@ -53,6 +57,8 @@ impl<T: Copy + Default + FromBytes + Float + Sum + OP::CudaDType> Llama<T> {
             eos_token_id: config.eos_token_id,
             #[cfg(feature = "cuda")]
             operator: OP::CudaOperator::new(),
+            #[cfg(feature = "flash_attn")]
+            device,
         }
     }
 
@@ -128,6 +134,21 @@ impl<T: Copy + Default + FromBytes + Float + Sum + OP::CudaDType> Llama<T> {
             let full_k = &mut cache.k_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
             let full_v = &mut cache.v_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
 
+            #[cfg(feature = "flash_attn")]
+            self_attention(
+                &self.device,
+                &mut hidden_states,
+                &mut att_scores,
+                q,
+                full_k,
+                full_v,
+                self.n_kv_h,
+                n_groups,
+                seq_len,
+                total_seq_len,
+                self.dqkv,
+            );
+            #[cfg(not(feature = "flash_attn"))]
             self.operator.self_attention(
                 &mut hidden_states,
                 &mut att_scores,
@@ -307,6 +328,61 @@ impl<T: Copy + Default + FromBytes + Float + Sum + OP::CudaDType> Llama<T> {
             }
         }
     }
+}
+
+// 仅支持cuda + f16/bf16
+#[cfg(feature = "flash_attn")]
+fn self_attention(
+    device: &candle_core::Device,
+    hidden_states: &mut Tensor<f32>, // (seq, n_kv_h * n_groups * dqkv)
+    att_scores: &mut Tensor<f32>,    // (n_kv_h, n_groups, seq, total_seq)
+    q: &Tensor<f32>,                 // (seq, n_kv_h * n_groups * dqkv)
+    k: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
+    v: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
+    n_kv_h: usize,
+    n_groups: usize,
+    seq_len: usize,
+    total_seq_len: usize,
+    dqkv: usize,
+) {
+    use candle_core::{Device, Tensor as CandleTensor};
+    let n_q_h = n_kv_h * n_groups;
+
+    let q_data = q.data();
+    let q_candle = CandleTensor::from_slice(q_data, (seq_len, n_q_h, dqkv), device)
+        .expect("Failed to create Q tensor")
+        .unsqueeze(0)
+        .expect("Failed to add batch dim");
+
+    let k_data = k.data();
+    let k_candle = CandleTensor::from_slice(k_data, (total_seq_len, n_kv_h, dqkv), device)
+        .expect("Failed to create K tensor")
+        .unsqueeze(0)
+        .expect("Failed to add batch dim");
+
+    let v_data = v.data();
+    let v_candle = CandleTensor::from_slice(v_data, (total_seq_len, n_kv_h, dqkv), device)
+        .expect("Failed to create V tensor")
+        .unsqueeze(0)
+        .expect("Failed to add batch dim");
+
+    let softmax_scale = 1.0 / (dqkv as f32).sqrt();
+    let causal = true;
+
+    let attn_output =
+        candle_flash_attn::flash_attn(&q_candle, &k_candle, &v_candle, softmax_scale, causal)
+            .expect("Flash attention failed");
+
+    let attn_output = attn_output
+        .squeeze(0)
+        .expect("Failed to remove batch dim")
+        .flatten_all()
+        .expect("Failed to flatten")
+        .to_vec1()
+        .expect("Failed to convert to vec");
+
+    let hidden_data = unsafe { hidden_states.data_mut() };
+    hidden_data.copy_from_slice(&attn_output);
 }
 
 fn mlp<T: Copy + Default + Float + Sum + OP::CudaDType>(
