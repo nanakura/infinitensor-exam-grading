@@ -1,8 +1,10 @@
 use std::iter::Sum;
 
+use cudarc::cublas::sys::cublasOperation_t;
 use cudarc::cublas::Gemm;
 use cudarc::cublas::{CudaBlas, GemmConfig};
 use cudarc::driver::CudaView;
+use cudarc::driver::DeviceSlice;
 use cudarc::driver::{CudaDevice, LaunchAsync, LaunchConfig};
 use cudarc::driver::{CudaFunction, CudaSlice};
 use half::{bf16, f16};
@@ -140,53 +142,46 @@ impl CudaOperator {
         b: &Tensor<T>,
         alpha: T,
     ) {
-        let (m, n) = (a.shape()[0], a.shape()[1]);
-        let p = b.shape()[0];
-        let kname = kernel_name::<T>("matmul_transb");
-        let f = self.get_or_load_func(&kname, cuda_kernels::MATMUL);
+        let (m, k) = (a.shape()[0], a.shape()[1]);
+        let (n, k2) = (b.shape()[0], b.shape()[1]);
+        assert_eq!(k, k2,);
+        assert_eq!(c.shape(), &vec![m, n]);
+        let dev = self.dev.clone();
+        let blas = self.blas.clone();
 
-        // Convert tensors to f32 slices
-        let a_host: &[T] =
-            unsafe { std::slice::from_raw_parts(a.data().as_ptr() as *const T, a.data().len()) };
-        let b_host: &[T] =
-            unsafe { std::slice::from_raw_parts(b.data().as_ptr() as *const T, b.data().len()) };
-        let c_host: &mut [T] = unsafe {
-            std::slice::from_raw_parts_mut(c.data_mut().as_mut_ptr() as *mut T, c.data().len())
+        let a_host: &[T] = a.data();
+        let b_host: &[T] = b.data();
+        let c_host: &mut [T] = unsafe { c.data_mut() };
+
+        let a_dev = dev.htod_sync_copy(a_host).unwrap();
+        let b_dev = dev.htod_sync_copy(b_host).unwrap();
+        let mut c_dev = dev.htod_sync_copy(c_host).unwrap();
+        let m = m as i32;
+        let n = n as i32;
+        let k = k as i32;
+
+        let gemm_cfg = GemmConfig {
+            transa: cublasOperation_t::CUBLAS_OP_T,
+            transb: cublasOperation_t::CUBLAS_OP_N,
+            m: n,
+            n: m,
+            k: k,
+            alpha: alpha,
+            lda: k,
+            ldb: k,
+            beta: beta,
+            ldc: n,
         };
 
-        // Copy data to device
-        let a_dev = self.dev.htod_sync_copy(a_host).unwrap();
-        let b_dev = self.dev.htod_sync_copy(b_host).unwrap();
-        let mut c_dev = self.dev.htod_sync_copy(c_host).unwrap();
-
-        // Configure kernel launch parameters
-        let block_dim = (16, 16, 1);
-        let grid_dim = (
-            (p as u32 + block_dim.0 - 1) / block_dim.0,
-            (m as u32 + block_dim.1 - 1) / block_dim.1,
-            1,
+        T::gemm(
+            &blas,
+            gemm_cfg,
+            &b_dev.slice(0..b_dev.len()),
+            &a_dev.slice(0..a_dev.len()),
+            &mut c_dev,
         );
 
-        let cfg = LaunchConfig {
-            block_dim,
-            grid_dim,
-            shared_mem_bytes: 0,
-        };
-
-        // Launch kernel
-        unsafe {
-            f.launch(
-                cfg,
-                (
-                    &mut c_dev, beta, &a_dev, &b_dev, alpha, m as i32, n as i32, p as i32,
-                ),
-            )
-            .unwrap();
-        }
-
-        // Copy result back to host
-        self.dev.dtoh_sync_copy_into(&c_dev, c_host).unwrap();
-        self.dev.synchronize().unwrap();
+        dev.dtoh_sync_copy_into(&c_dev, c_host).unwrap();
     }
 
     pub fn rms_norm<T: CudaDType + Copy + Default + Float>(
