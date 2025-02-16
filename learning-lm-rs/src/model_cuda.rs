@@ -7,6 +7,7 @@ use crate::kvcache::KVCache;
 use crate::operators_cuda::{self as OP};
 use crate::params::{FromBytes, LLamaParams};
 use crate::tensor::Tensor;
+use half::{bf16, f16};
 use num_traits::Float;
 use safetensors::SafeTensors;
 use std::path::Path;
@@ -31,9 +32,20 @@ pub struct Llama<T> {
     device: candle_core::Device,
 }
 
-impl<T: Copy + Default + FromBytes + Float + Sum + OP::CudaDType + candle_core::WithDType>
-    Llama<T>
+#[cfg(feature = "flash_attn")]
+pub trait LlmDType:
+    Copy + Default + FromBytes + Float + Sum + OP::CudaDType + candle_core::WithDType
 {
+}
+
+#[cfg(not(feature = "flash_attn"))]
+pub trait LlmDType: Copy + Default + FromBytes + Float + Sum + OP::CudaDType {}
+
+impl LlmDType for f32 {}
+impl LlmDType for f16 {}
+impl LlmDType for bf16 {}
+
+impl<T: LlmDType> Llama<T> {
     pub fn from_safetensors(model_dir: impl AsRef<Path>) -> Self {
         let config = File::open(model_dir.as_ref().join("config.json")).unwrap();
         let config: LlamaConfigJson = serde_json::from_reader(config).unwrap();
